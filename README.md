@@ -49,6 +49,96 @@ Run the C.A.T.S. strategy mode:
 python -m cats_automatic.main --game cats --strategy ad_reward --max-loops 3
 ```
 
+The first stable C.A.T.S. strategy feature was `ad_entry` detection. The current
+`ad_reward` strategy also supports the first page-gated action on the film ad
+page: it detects `page_marker` first, then clicks `watch_ad_button` only when
+both are present. `page_marker` is a page marker only and is never clicked.
+Advertisement close buttons have the highest priority: the strategy checks the
+right-top `close-end-2` region first, then the left-top `close-end-1` region,
+and prints `close_ad` as a dry-run click when either one is detected.
+If close buttons remain visible across multiple loops, `ad_reward` can keep
+closing them, but it stops after three consecutive `close_ad` decisions and
+prints `wait_close_limit_reached` until a non-close state resets the counter.
+After an ad finishes, the reward confirmation page is handled before the film
+ad page: `reward_confirm_marker` confirms the page, and only `confirm_button`
+is clicked with the `confirm_reward` decision.
+
+Run the same strategy against a fixed test screenshot without capturing the
+desktop or an emulator window:
+
+```powershell
+python -m cats_automatic.main `
+  --game cats `
+  --strategy ad_reward `
+  --screen samples\cats\home_screen.png `
+  --max-loops 1
+```
+
+When `--game` and `--screen` are used together, strategy mode uses the static
+image every loop. This is the preferred path for repeatable pytest/manual
+recognition tests because it bypasses fullscreen and window capture. A
+successful `home_screen` run can still print `Detected: ad_entry`, but the
+current page-gated strategy waits until the film page marker is present before
+clicking any ad button.
+
+Run the film ad page strategy test:
+
+```powershell
+python -m cats_automatic.main `
+  --game cats `
+  --strategy ad_reward `
+  --screen samples\cats\jiao_juan_page.png `
+  --max-loops 1
+```
+
+A successful film ad page run prints `Detected: page_marker`, `Detected:
+watch_ad_button`, `Decision: click_watch_ad_button`, and `DRY RUN click x=636
+y=615`.
+
+Run an ad-close screenshot test:
+
+```powershell
+python -m cats_automatic.main `
+  --game cats `
+  --strategy ad_reward `
+  --screen samples\cats\ad_close_tests\Screenshot_20260531-222029.png `
+  --max-loops 1
+```
+
+A successful close run prints `Decision: close_ad` and `DRY RUN click`.
+For a replay-style static close test, raise `--max-loops` to 4; the first three
+loops should close, and the fourth should wait with `wait_close_limit_reached`.
+
+Run a reward confirmation page test:
+
+```powershell
+python -m cats_automatic.main `
+  --game cats `
+  --strategy ad_reward `
+  --screen samples\cats\reward_confirm_page.png `
+  --max-loops 1
+```
+
+A successful reward confirmation run prints `Detected: reward_confirm_marker`,
+`Detected: confirm_button`, `Decision: confirm_reward`, and `DRY RUN click
+x=631 y=657`.
+
+Run the complete dry-run replay chain without capturing the desktop:
+
+```powershell
+python -m cats_automatic.main `
+  --game cats `
+  --strategy ad_reward `
+  --capture-backend replay `
+  --replay-screens samples\cats\home_screen.png,samples\cats\jiao_juan_page.png,samples\cats\ad_close_tests\Screenshot_20260531-222029.png,samples\cats\reward_confirm_page.png `
+  --max-loops 4
+```
+
+Replay mode returns the listed screenshots in order. If there are more loops
+than screenshots, it reuses the last screenshot and prints a clear replay log.
+The expected decisions are `click_ad_entry`, `click_watch_ad_button`,
+`close_ad`, and `confirm_reward`.
+
 Use the window capture backend for an emulator window:
 
 ```powershell
@@ -182,6 +272,12 @@ Safety defaults:
 
 - Real clicks are not implemented in this build.
 - Strategy mode uses dry-run actions only.
+- The current `ad_reward` strategy formalizes `ad_entry` detection plus the
+  film page `page_marker -> watch_ad_button` dry-run action plus ad close
+  buttons plus reward confirmation. Other reward flows are intentionally left
+  for later small features.
+- `--capture-backend replay` reads local screenshots only; it does not capture
+  the desktop or control windows.
 - `--max-actions 1` allows only one click by default.
 - `--repeat-actions` defaults to 1 and must fit within `--max-actions`.
 - `--click-cooldown` prevents rapid repeated clicks.

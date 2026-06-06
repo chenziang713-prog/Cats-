@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .actions import ActionExecutor
 from .actions import DryRunBackend
-from .backends import CaptureBackendError, create_capture_backend
+from .backends import CaptureBackendError, StaticImageCaptureBackend, create_capture_backend
 from .config_loader import load_flow
 from .game_loader import GameLoadError, load_game, load_strategy
 from .rules import RuleEngine
@@ -156,7 +156,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--capture-backend",
-        choices=["fullscreen", "window"],
+        choices=["fullscreen", "window", "replay"],
         default="fullscreen",
         help="Capture backend for live, watch, capture, and strategy modes.",
     )
@@ -164,6 +164,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--window-title",
         default=None,
         help="Window title keyword required by --capture-backend window.",
+    )
+    parser.add_argument(
+        "--replay-screens",
+        default=None,
+        help="Comma-separated screenshot paths required by --capture-backend replay.",
     )
     return parser
 
@@ -295,16 +300,32 @@ def main() -> None:
 
 def build_capture_backend(args: argparse.Namespace):
     try:
-        return create_capture_backend(args.capture_backend, window_title=args.window_title)
+        return create_capture_backend(
+            args.capture_backend,
+            window_title=args.window_title,
+            replay_screens=parse_replay_screens(args.replay_screens),
+        )
     except CaptureBackendError as exc:
         raise SystemExit(str(exc)) from exc
+
+
+def parse_replay_screens(raw_value: str | None) -> list[Path]:
+    if raw_value is None:
+        return []
+    return [Path(part.strip()) for part in raw_value.split(",") if part.strip()]
+
+
+def build_strategy_capture_backend(args: argparse.Namespace):
+    if args.screen is not None:
+        return StaticImageCaptureBackend(args.screen)
+    return build_capture_backend(args)
 
 
 def run_strategy_mode(args: argparse.Namespace, root: Path) -> None:
     try:
         game = load_game(args.game)
         strategy = load_strategy(args.game, args.strategy)
-        capture_backend = build_capture_backend(args)
+        capture_backend = build_strategy_capture_backend(args)
     except (GameLoadError, CaptureBackendError) as exc:
         raise SystemExit(str(exc)) from exc
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
 
@@ -17,7 +18,12 @@ class CaptureBackend(Protocol):
         raise NotImplementedError
 
 
-def create_capture_backend(kind: str, *, window_title: str | None = None) -> CaptureBackend:
+def create_capture_backend(
+    kind: str,
+    *,
+    window_title: str | None = None,
+    replay_screens: Sequence[Path] | None = None,
+) -> CaptureBackend:
     if kind == "fullscreen":
         from .fullscreen_capture import FullScreenCaptureBackend
 
@@ -28,4 +34,8 @@ def create_capture_backend(kind: str, *, window_title: str | None = None) -> Cap
         from .window_capture import WindowCaptureBackend
 
         return WindowCaptureBackend(window_title)
+    if kind == "replay":
+        from .replay_capture import ReplayCaptureBackend
+
+        return ReplayCaptureBackend(replay_screens or [])
     raise CaptureBackendError(f"Unsupported capture backend: {kind}")

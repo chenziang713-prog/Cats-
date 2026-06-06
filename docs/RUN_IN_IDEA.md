@@ -81,6 +81,80 @@ Working directory: C:\Users\shenj\Documents\CATSautomatic
 Python interpreter: C:\Users\shenj\Documents\CATSautomatic\.venv\Scripts\python.exe
 ```
 
+Use this configuration to test the strategy against one fixed screenshot without
+capturing the desktop or emulator window:
+
+```text
+Module name: cats_automatic.main
+Parameters: --game cats --strategy ad_reward --screen samples\cats\home_screen.png --max-loops 1
+Working directory: C:\Users\shenj\Documents\CATSautomatic
+Python interpreter: C:\Users\shenj\Documents\CATSautomatic\.venv\Scripts\python.exe
+```
+
+This checks that the original `ad_entry` target still detects on the home
+screen. The current page-gated strategy should wait until the film page marker
+is present. No mouse, keyboard, ADB, or window control is used.
+
+Use this configuration to test the film ad page marker plus watch-ad button:
+
+```text
+Module name: cats_automatic.main
+Parameters: --game cats --strategy ad_reward --screen samples\cats\jiao_juan_page.png --max-loops 1
+Working directory: C:\Users\shenj\Documents\CATSautomatic
+Python interpreter: C:\Users\shenj\Documents\CATSautomatic\.venv\Scripts\python.exe
+```
+
+This should print `Detected: page_marker`, `Detected: watch_ad_button`,
+`Decision: click_watch_ad_button`, and `DRY RUN click x=636 y=615`.
+`page_marker` is only used to confirm the page and is not clicked.
+
+Use this configuration to test ad close detection:
+
+```text
+Module name: cats_automatic.main
+Parameters: --game cats --strategy ad_reward --screen samples\cats\ad_close_tests\Screenshot_20260531-222029.png --max-loops 1
+Working directory: C:\Users\shenj\Documents\CATSautomatic
+Python interpreter: C:\Users\shenj\Documents\CATSautomatic\.venv\Scripts\python.exe
+```
+
+This should print `Decision: close_ad` and `DRY RUN click`. The close targets
+use fixed top-corner regions and do not perform fullscreen close-button
+matching.
+
+To test the consecutive close guard in IDEA, use the same configuration with:
+
+```text
+Parameters: --game cats --strategy ad_reward --screen samples\cats\ad_close_tests\Screenshot_20260531-222029.png --max-loops 4
+```
+
+Loops 1-3 should print `Decision: close_ad`; loop 4 should print
+`wait_close_limit_reached`.
+
+Use this configuration to test the reward confirmation page:
+
+```text
+Module name: cats_automatic.main
+Parameters: --game cats --strategy ad_reward --screen samples\cats\reward_confirm_page.png --max-loops 1
+Working directory: C:\Users\shenj\Documents\CATSautomatic
+Python interpreter: C:\Users\shenj\Documents\CATSautomatic\.venv\Scripts\python.exe
+```
+
+This should print `Detected: reward_confirm_marker`, `Detected:
+confirm_button`, `Decision: confirm_reward`, and `DRY RUN click x=631 y=657`.
+The marker is not clickable; the dry-run click comes from `confirm_button`.
+
+Use this configuration to test the complete replay chain:
+
+```text
+Module name: cats_automatic.main
+Parameters: --game cats --strategy ad_reward --capture-backend replay --replay-screens samples\cats\home_screen.png,samples\cats\jiao_juan_page.png,samples\cats\ad_close_tests\Screenshot_20260531-222029.png,samples\cats\reward_confirm_page.png --max-loops 4
+Working directory: C:\Users\shenj\Documents\CATSautomatic
+Python interpreter: C:\Users\shenj\Documents\CATSautomatic\.venv\Scripts\python.exe
+```
+
+This should print decisions in order: `click_ad_entry`,
+`click_watch_ad_button`, `close_ad`, and `confirm_reward`.
+
 Use this configuration to capture only a matching emulator window:
 
 ```text
