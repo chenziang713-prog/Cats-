@@ -1,0 +1,12 @@
+{
+  "name": "default-demo-flow",
+  "confidence_threshold": 0.85,
+  "steps": [
+    {
+      "name": "find_primary_button",
+      "template": "templates/primary_button.png",
+      "action": "click_center",
+      "timeout_seconds": 5
+    }
+  ]
+}

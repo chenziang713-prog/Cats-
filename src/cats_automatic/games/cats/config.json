@@ -1,0 +1,12 @@
+{
+  "name": "cats-demo-flow",
+  "confidence_threshold": 0.85,
+  "steps": [
+    {
+      "name": "find_ad_entry",
+      "template": "games/cats/templates/ad-entry.png",
+      "action": "click_center",
+      "timeout_seconds": 5
+    }
+  ]
+}
