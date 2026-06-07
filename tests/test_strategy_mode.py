@@ -10,7 +10,7 @@ from unittest.mock import Mock
 import pytest
 from PIL import Image
 
-from cats_automatic.actions import ClickAction, DryRunBackend, TapAction
+from cats_automatic.actions import AdbActionBackend, ClickAction, DryRunBackend, TapAction
 from cats_automatic.backends import (
     AdbCaptureBackend,
     CaptureBackendError,
@@ -34,7 +34,12 @@ from cats_automatic.strategy_base import (
     StrategyDecision,
     TargetSpec,
 )
-from cats_automatic.main import build_parser, build_strategy_capture_backend, parse_replay_screens
+from cats_automatic.main import (
+    build_parser,
+    build_strategy_action_backend,
+    build_strategy_capture_backend,
+    parse_replay_screens,
+)
 from cats_automatic.strategy_runner import StrategyRunner, resolve_target_region
 from cats_automatic.vision import MatchResult
 from cats_automatic.window_capture import WindowFrame
@@ -116,6 +121,121 @@ def test_ad_reward_strategy_clicks_watch_ad_button_on_target_page() -> None:
         "click_watch_ad_button",
         "click_watch_ad_button",
     )
+
+
+def test_ad_reward_strategy_enters_ad_waiting_after_watch(capsys: pytest.CaptureFixture[str]) -> None:
+    strategy = AdRewardStrategy()
+
+    decision = strategy.decide(
+        _context_with_detections(
+            {
+                "page_marker": _detection("page_marker"),
+                "watch_ad_button": _detection("watch_ad_button"),
+            }
+        )
+    )
+
+    assert decision == StrategyDecision.click(
+        "watch_ad_button",
+        "click_watch_ad_button",
+        "click_watch_ad_button",
+    )
+    assert "entered ad_waiting_after_watch after click_watch_ad_button" in capsys.readouterr().out
+
+
+def test_ad_reward_strategy_waiting_state_blocks_ad_entry_click() -> None:
+    strategy = _strategy_after_watch_ad_click()
+
+    decision = strategy.decide(_context_with_detections({"ad_entry": _detection("ad_entry")}))
+
+    assert decision == StrategyDecision.wait(1.0, "waiting_for_ad_close_or_reward")
+
+
+def test_ad_reward_strategy_waiting_state_blocks_repeated_watch_ad_click() -> None:
+    strategy = _strategy_after_watch_ad_click()
+
+    decision = strategy.decide(
+        _context_with_detections(
+            {
+                "page_marker": _detection("page_marker"),
+                "watch_ad_button": _detection("watch_ad_button"),
+            }
+        )
+    )
+
+    assert decision == StrategyDecision.wait(1.0, "waiting_for_ad_close_or_reward")
+
+
+def test_ad_reward_strategy_waiting_state_allows_close_ad() -> None:
+    strategy = _strategy_after_watch_ad_click()
+
+    decision = strategy.decide(_context_with_detections({"close_end_4": _detection("close_end_4")}))
+
+    assert decision == StrategyDecision.click("close_end_4", "close_ad", "close_ad")
+
+
+def test_ad_reward_strategy_waiting_state_confirms_reward_and_leaves() -> None:
+    strategy = _strategy_after_watch_ad_click()
+
+    confirm_decision = strategy.decide(
+        _context_with_detections(
+            {
+                "reward_confirm_marker": _detection("reward_confirm_marker"),
+                "confirm_button": _detection("confirm_button"),
+            }
+        )
+    )
+    after_confirm_decision = strategy.decide(
+        _context_with_detections({"ad_entry": _detection("ad_entry")})
+    )
+
+    assert confirm_decision == StrategyDecision.click(
+        "confirm_button",
+        "confirm_reward",
+        "confirm_reward",
+    )
+    assert after_confirm_decision == StrategyDecision.click(
+        "ad_entry",
+        "click_ad_entry",
+        "click_ad_entry",
+    )
+
+
+def test_ad_reward_strategy_waiting_state_logs_wait_and_confirm(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    strategy = _strategy_after_watch_ad_click()
+
+    strategy.decide(_context_with_detections({"ad_entry": _detection("ad_entry")}))
+    wait_output = capsys.readouterr().out
+    strategy.decide(
+        _context_with_detections(
+            {
+                "reward_confirm_marker": _detection("reward_confirm_marker"),
+                "confirm_button": _detection("confirm_button"),
+            }
+        )
+    )
+    confirm_output = capsys.readouterr().out
+
+    assert "waiting_for_ad_close_or_reward" in wait_output
+    assert "confirm_reward detected, leaving ad_waiting_after_watch" in confirm_output
+
+
+def test_ad_reward_strategy_waiting_state_keeps_close_limit() -> None:
+    strategy = _strategy_after_watch_ad_click()
+
+    decisions = [
+        strategy.decide(_context_with_detections({"close_end_2": _detection("close_end_2")}))
+        for _ in range(4)
+    ]
+
+    assert decisions == [
+        StrategyDecision.click("close_end_2", "close_ad", "close_ad"),
+        StrategyDecision.click("close_end_2", "close_ad", "close_ad"),
+        StrategyDecision.click("close_end_2", "close_ad", "close_ad"),
+        StrategyDecision.wait(1.0, "wait_close_limit_reached"),
+    ]
 
 
 def test_ad_reward_strategy_confirms_reward_when_marker_and_button_detected() -> None:
@@ -683,6 +803,177 @@ def test_adb_capture_backend_saves_screencap_png(tmp_path: Path) -> None:
         "screencap",
         "-p",
     ]
+
+
+def test_strategy_action_backend_defaults_to_dry_run() -> None:
+    args = build_parser().parse_args(["--game", "cats", "--strategy", "ad_reward"])
+
+    backend = build_strategy_action_backend(args)
+
+    assert isinstance(backend, DryRunBackend)
+
+
+def test_strategy_action_backend_uses_adb_when_allow_click_and_adb(tmp_path: Path) -> None:
+    adb = tmp_path / "adb.exe"
+    adb.touch()
+    args = build_parser().parse_args(
+        [
+            "--game",
+            "cats",
+            "--strategy",
+            "ad_reward",
+            "--capture-backend",
+            "adb",
+            "--adb-path",
+            str(adb),
+            "--adb-serial",
+            "emulator-5556",
+            "--allow-click",
+        ]
+    )
+
+    backend = build_strategy_action_backend(args)
+
+    assert isinstance(backend, AdbActionBackend)
+
+
+def test_strategy_action_backend_rejects_replay_real_click(tmp_path: Path) -> None:
+    args = build_parser().parse_args(
+        [
+            "--game",
+            "cats",
+            "--strategy",
+            "ad_reward",
+            "--capture-backend",
+            "replay",
+            "--replay-screens",
+            str(tmp_path / "screen.png"),
+            "--allow-click",
+        ]
+    )
+
+    with pytest.raises(CaptureBackendError, match="--allow-click is only allowed"):
+        build_strategy_action_backend(args)
+
+
+@pytest.mark.parametrize("backend_name", ["fullscreen", "window"])
+def test_strategy_action_backend_rejects_non_adb_real_click(
+    backend_name: str,
+    tmp_path: Path,
+) -> None:
+    args_list = [
+        "--game",
+        "cats",
+        "--strategy",
+        "ad_reward",
+        "--capture-backend",
+        backend_name,
+        "--allow-click",
+    ]
+    if backend_name == "window":
+        args_list.extend(["--window-title", "ANG"])
+    args = build_parser().parse_args(args_list)
+
+    with pytest.raises(CaptureBackendError, match="--allow-click is only allowed"):
+        build_strategy_action_backend(args)
+
+
+def test_adb_action_backend_calls_adb_input_tap(tmp_path: Path) -> None:
+    adb = tmp_path / "adb.exe"
+    adb.touch()
+    commands: list[list[str]] = []
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+    backend = AdbActionBackend(
+        adb_path=adb,
+        adb_serial="emulator-5556",
+        max_actions=1,
+        click_cooldown=0,
+        runner=runner,
+    )
+
+    backend.click(ClickAction(123, 456, 0.9, "click_test"))
+
+    assert commands == [
+        [str(adb), "-s", "emulator-5556", "shell", "input", "tap", "123", "456"]
+    ]
+    assert backend.action_count == 1
+
+
+def test_adb_action_backend_wait_does_not_call_tap(tmp_path: Path) -> None:
+    adb = tmp_path / "adb.exe"
+    adb.touch()
+    commands: list[list[str]] = []
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+    backend = AdbActionBackend(
+        adb_path=adb,
+        adb_serial="emulator-5556",
+        runner=runner,
+    )
+
+    backend.wait(1.0, "wait_close_limit_reached")
+
+    assert commands == []
+    assert backend.action_count == 0
+
+
+def test_adb_action_backend_wait_does_not_consume_max_actions(tmp_path: Path) -> None:
+    adb = tmp_path / "adb.exe"
+    adb.touch()
+    commands: list[list[str]] = []
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+    backend = AdbActionBackend(
+        adb_path=adb,
+        adb_serial="emulator-5556",
+        max_actions=1,
+        click_cooldown=0,
+        runner=runner,
+    )
+
+    backend.wait(1.0, "waiting_for_ad_close_or_reward")
+    backend.click(ClickAction(123, 456, 0.9, "after_wait"))
+
+    assert commands == [
+        [str(adb), "-s", "emulator-5556", "shell", "input", "tap", "123", "456"]
+    ]
+    assert backend.action_count == 1
+
+
+def test_adb_action_backend_max_actions_limits_taps(tmp_path: Path) -> None:
+    adb = tmp_path / "adb.exe"
+    adb.touch()
+    commands: list[list[str]] = []
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+    backend = AdbActionBackend(
+        adb_path=adb,
+        adb_serial="emulator-5556",
+        max_actions=1,
+        click_cooldown=0,
+        runner=runner,
+    )
+
+    backend.click(ClickAction(123, 456, 0.9, "first"))
+    backend.click(ClickAction(789, 111, 0.9, "second"))
+
+    assert commands == [
+        [str(adb), "-s", "emulator-5556", "shell", "input", "tap", "123", "456"]
+    ]
+    assert backend.action_count == 1
 
 
 def test_replay_capture_backend_returns_screens_in_order(tmp_path: Path) -> None:
@@ -1365,6 +1656,19 @@ def _context_with_detections(detections: dict[str, DetectionResult]) -> Strategy
         detections=detections,
         resolve_template=lambda value: Path(value),
     )
+
+
+def _strategy_after_watch_ad_click() -> AdRewardStrategy:
+    strategy = AdRewardStrategy()
+    strategy.decide(
+        _context_with_detections(
+            {
+                "page_marker": _detection("page_marker"),
+                "watch_ad_button": _detection("watch_ad_button"),
+            }
+        )
+    )
+    return strategy
 
 
 class StaticStrategy:

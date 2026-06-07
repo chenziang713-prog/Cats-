@@ -9,6 +9,7 @@ class Strategy:
     def __init__(self, max_consecutive_close_actions: int = 3) -> None:
         self.max_consecutive_close_actions = max_consecutive_close_actions
         self._consecutive_close_actions = 0
+        self._ad_waiting_after_watch = False
 
     def targets(self) -> Sequence[TargetSpec]:
         return (
@@ -100,6 +101,9 @@ class Strategy:
         )
 
     def decide(self, context: StrategyContext) -> StrategyDecision:
+        if self._ad_waiting_after_watch:
+            return self._decide_while_waiting_after_watch(context)
+
         if "close_end_2" in context.detections:
             return self._close_or_wait("close_end_2")
         if "close_end_1" in context.detections:
@@ -124,11 +128,32 @@ class Strategy:
             return StrategyDecision.wait(1.0, "wait_not_on_target_page")
         if "watch_ad_button" not in context.detections:
             return StrategyDecision.wait(1.0, "wait_no_ad_button")
+        self._ad_waiting_after_watch = True
+        print("entered ad_waiting_after_watch after click_watch_ad_button")
         return StrategyDecision.click(
             "watch_ad_button",
             "click_watch_ad_button",
             "click_watch_ad_button",
         )
+
+    def _decide_while_waiting_after_watch(self, context: StrategyContext) -> StrategyDecision:
+        for target_name in ("close_end_2", "close_end_1", "close_end_3", "close_end_4"):
+            if target_name in context.detections:
+                print("close_ad detected during ad_waiting_after_watch")
+                return self._close_or_wait(target_name)
+
+        self._reset_close_limit()
+        if "reward_confirm_marker" in context.detections and "confirm_button" in context.detections:
+            self._ad_waiting_after_watch = False
+            print("confirm_reward detected, leaving ad_waiting_after_watch")
+            return StrategyDecision.click(
+                "confirm_button",
+                "confirm_reward",
+                "confirm_reward",
+            )
+
+        print("waiting_for_ad_close_or_reward")
+        return StrategyDecision.wait(1.0, "waiting_for_ad_close_or_reward")
 
     def _close_or_wait(self, target_name: str) -> StrategyDecision:
         if self._consecutive_close_actions >= self.max_consecutive_close_actions:

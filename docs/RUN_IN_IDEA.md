@@ -200,7 +200,19 @@ Python interpreter: C:\Users\shenj\Documents\CATSautomatic\.venv\Scripts\python.
 ```
 
 ADB capture saves `output\adb-current.png` and still uses dry-run actions only.
-It does not call `adb tap`.
+It does not call `adb tap` unless `--allow-click` is also provided.
+
+Guarded ADB real tap configuration:
+
+```text
+Module name: cats_automatic.main
+Parameters: --game cats --strategy ad_reward --capture-backend adb --adb-path "C:\Program Files\ASUS\GlideX\adb.exe" --adb-serial emulator-5556 --allow-click --max-actions 1 --max-loops 1
+Working directory: C:\Users\shenj\Documents\CATSautomatic
+Python interpreter: C:\Users\shenj\Documents\CATSautomatic\.venv\Scripts\python.exe
+```
+
+Use this only after dry-run coordinates are verified. Replay, fullscreen, and
+window backends reject `--allow-click`.
 
 Use this configuration to capture only a matching emulator window:
 

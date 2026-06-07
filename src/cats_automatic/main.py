@@ -3,8 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .actions import ActionExecutor
-from .actions import DryRunBackend
+from .actions import ActionBackend, ActionExecutor, AdbActionBackend, DryRunBackend
 from .backends import (
     CaptureBackendError,
     StaticImageCaptureBackend,
@@ -223,15 +222,16 @@ def main() -> None:
     flow = load_flow(flow_path)
     if args.threshold is not None:
         flow = flow.with_threshold(args.threshold)
-    if args.allow_click:
-        raise SystemExit(
-            "--allow-click is reserved for a future input backend. "
-            "Current builds only support dry-run actions."
-        )
 
     if args.game:
         run_strategy_mode(args, root)
         return
+
+    if args.allow_click:
+        raise SystemExit(
+            "--allow-click is only supported in strategy mode with --capture-backend adb. "
+            "Current non-strategy flows stay dry-run only."
+        )
 
     scenario = load_scenario(args.scenario, root) if args.scenario else None
     max_actions = (
@@ -390,7 +390,10 @@ def run_strategy_mode(args: argparse.Namespace, root: Path) -> None:
     print(f"Loaded game: {game.name}")
     print(f"Loaded strategy: {args.strategy or 'default'}")
     print(f"Capture backend: {capture_backend.name}")
-    action_backend = DryRunBackend(log_file=args.log_file)
+    try:
+        action_backend = build_strategy_action_backend(args)
+    except (CaptureBackendError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
     try:
         runner = StrategyRunner(
             game=game,
@@ -405,6 +408,29 @@ def run_strategy_mode(args: argparse.Namespace, root: Path) -> None:
         runner.run()
     finally:
         action_backend.close()
+
+
+def build_strategy_action_backend(args: argparse.Namespace) -> ActionBackend:
+    if not args.allow_click:
+        return DryRunBackend(log_file=args.log_file)
+    if args.capture_backend != "adb":
+        raise CaptureBackendError(
+            "--allow-click is only allowed with --capture-backend adb. "
+            "Replay, fullscreen, and window backends remain dry-run only."
+        )
+    if args.adb_path is None:
+        raise CaptureBackendError("--adb-path is required when --allow-click is used with adb.")
+    if args.adb_serial is None or not args.adb_serial.strip():
+        raise CaptureBackendError("--adb-serial is required when --allow-click is used with adb.")
+    max_actions = args.max_actions if args.max_actions is not None else 1
+    return AdbActionBackend(
+        adb_path=args.adb_path,
+        adb_serial=args.adb_serial,
+        max_actions=max_actions,
+        click_cooldown=args.click_cooldown,
+        stop_file=args.stop_file,
+        log_file=args.log_file,
+    )
 
 
 if __name__ == "__main__":

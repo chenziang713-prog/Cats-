@@ -59,6 +59,11 @@ can stay stable while game-specific files move under `games/<game_name>/`.
   handle instead of relying only on fuzzy title matching.
 - ADB screenshot backend: `--capture-backend adb` uses `adb exec-out screencap
   -p` to capture a borderless emulator screenshot for dry-run strategy testing.
+- Guarded ADB action backend: real `adb shell input tap x y` is only available
+  when `--allow-click` is combined with `--capture-backend adb`.
+- Ad playback waiting state: after `click_watch_ad_button`, `ad_reward` enters
+  `ad_waiting_after_watch` and only allows close, reward confirmation, or wait
+  decisions until reward confirmation exits the state.
 - Window capture backend interface and clear error handling.
 - Static strategy screenshot backend: `--game cats --strategy ad_reward --screen ...`
   runs against a fixed image and bypasses fullscreen/window capture.
@@ -135,8 +140,10 @@ can stay stable while game-specific files move under `games/<game_name>/`.
 - The window backend still captures the selected top-level window rectangle via
   PIL `ImageGrab`; this can include window borders or wrong/occluded pixels
   depending on the emulator and compositor.
-- ADB mode performs screenshot capture only. It intentionally does not provide
-  `adb tap`, real clicks, keyboard input, or emulator control.
+- Default behavior is still dry-run. Replay, fullscreen, and window backends
+  reject `--allow-click`; wait/unknown/undetected states do not tap.
+- During `ad_waiting_after_watch`, `ad_entry` and `watch_ad_button` detections
+  are ignored as click targets to avoid mis-clicks while an ad is playing.
 
 ## Current Stable Small Feature
 
@@ -250,6 +257,12 @@ Run an ADB screenshot check:
 
 ```powershell
 .\.venv\Scripts\python.exe -m cats_automatic.main --game cats --strategy ad_reward --capture-backend adb --adb-path "C:\Program Files\ASUS\GlideX\adb.exe" --adb-serial emulator-5556 --debug-save-capture output\adb-current.png --max-loops 1
+```
+
+Run a guarded ADB real-tap check only after dry-run coordinates are verified:
+
+```powershell
+.\.venv\Scripts\python.exe -m cats_automatic.main --game cats --strategy ad_reward --capture-backend adb --adb-path "C:\Program Files\ASUS\GlideX\adb.exe" --adb-serial emulator-5556 --allow-click --max-actions 1 --max-loops 1
 ```
 
 ## Future Real-Click Candidates

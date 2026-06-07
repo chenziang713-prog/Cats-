@@ -139,6 +139,13 @@ than screenshots, it reuses the last screenshot and prints a clear replay log.
 The expected decisions are `click_ad_entry`, `click_watch_ad_button`,
 `close_ad`, and `confirm_reward`.
 
+After `click_watch_ad_button`, `ad_reward` enters `ad_waiting_after_watch`.
+While waiting for the ad to finish, it continues capturing at the normal loop
+interval but only allows `close_ad`, `confirm_reward`, or `wait`. It will not
+repeat `click_ad_entry` or `click_watch_ad_button` during this state. When
+`confirm_reward` succeeds, the strategy leaves the waiting state and returns to
+the normal flow.
+
 Debug a live emulator/window capture without clicking:
 
 ```powershell
@@ -196,7 +203,31 @@ python -m cats_automatic.main `
 ```
 
 ADB mode only runs `adb devices` and `adb -s SERIAL exec-out screencap -p`.
-It does not implement `adb tap` or any real input action.
+By default, ADB mode is still dry-run and does not tap.
+
+Real ADB taps are guarded and only enabled when both conditions are true:
+
+```text
+--allow-click
+--capture-backend adb
+```
+
+Example guarded real-tap run:
+
+```powershell
+python -m cats_automatic.main `
+  --game cats `
+  --strategy ad_reward `
+  --capture-backend adb `
+  --adb-path "C:\Program Files\ASUS\GlideX\adb.exe" `
+  --adb-serial emulator-5556 `
+  --allow-click `
+  --max-actions 1 `
+  --max-loops 1
+```
+
+Replay, fullscreen, and window backends reject `--allow-click`. Wait decisions
+and undetected/low-confidence targets never call `adb shell input tap`.
 
 Use the window capture backend for an emulator window:
 
