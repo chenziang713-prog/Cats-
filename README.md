@@ -139,6 +139,65 @@ than screenshots, it reuses the last screenshot and prints a clear replay log.
 The expected decisions are `click_ad_entry`, `click_watch_ad_button`,
 `close_ad`, and `confirm_reward`.
 
+Debug a live emulator/window capture without clicking:
+
+```powershell
+python -m cats_automatic.main `
+  --game cats `
+  --strategy ad_reward `
+  --capture-backend window `
+  --window-title "ANG" `
+  --debug-save-capture output\ang-current.png `
+  --max-loops 1
+```
+
+Strategy mode prints `Capture image size: width=..., height=...` after every
+capture. The close-button search regions are computed from the captured image
+size, so smaller ANG window captures no longer make fixed 1280x720 close
+regions fail with a region-overlap error.
+
+List available Windows windows before choosing a window capture target:
+
+```powershell
+python -m cats_automatic.main --list-windows
+```
+
+The list includes `hwnd`, title, window rect, client rect, size, visibility, and
+minimized state. `--window-title` uses fuzzy title matching and selects the
+largest usable match when multiple windows match; for exact selection, copy the
+`hwnd` and run:
+
+```powershell
+python -m cats_automatic.main `
+  --game cats `
+  --strategy ad_reward `
+  --capture-backend window `
+  --window-hwnd 123456 `
+  --debug-save-capture output\ang-current.png `
+  --max-loops 1
+```
+
+Current limitation: the window backend captures the selected top-level window
+rectangle with `ImageGrab`. Depending on emulator/window composition, this can
+include borders, overlays, or stale/occluded content. Use `--list-windows` and
+`--window-hwnd` to make the selected window explicit before adjusting templates.
+
+Use ADB screenshot capture when the emulator window capture is unstable:
+
+```powershell
+python -m cats_automatic.main `
+  --game cats `
+  --strategy ad_reward `
+  --capture-backend adb `
+  --adb-path "C:\Program Files\ASUS\GlideX\adb.exe" `
+  --adb-serial emulator-5556 `
+  --debug-save-capture output\adb-current.png `
+  --max-loops 1
+```
+
+ADB mode only runs `adb devices` and `adb -s SERIAL exec-out screencap -p`.
+It does not implement `adb tap` or any real input action.
+
 Use the window capture backend for an emulator window:
 
 ```powershell

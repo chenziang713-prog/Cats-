@@ -20,12 +20,29 @@ class Region:
 
 
 @dataclass(frozen=True)
+class RelativeRegion:
+    x: float
+    y: float
+    width: float
+    height: float
+
+    def resolve(self, image_size: tuple[int, int]) -> tuple[int, int, int, int]:
+        image_width, image_height = image_size
+        return (
+            round(image_width * self.x),
+            round(image_height * self.y),
+            round(image_width * self.width),
+            round(image_height * self.height),
+        )
+
+
+@dataclass(frozen=True)
 class TargetSpec:
     name: str
     template: str
     threshold: float
     match_mode: str = "color"
-    region: Region | None = None
+    region: Region | RelativeRegion | None = None
     scale_min: float = 1.0
     scale_max: float = 1.0
     scale_step: float = 0.1

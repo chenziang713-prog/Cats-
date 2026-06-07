@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from ....strategy_base import Region, StrategyContext, StrategyDecision, TargetSpec
+from ....strategy_base import RelativeRegion, StrategyContext, StrategyDecision, TargetSpec
 
 
 class Strategy:
@@ -17,7 +17,7 @@ class Strategy:
                 template="templates/close-end-2.png",
                 threshold=0.75,
                 match_mode="color",
-                region=Region(x=1050, y=0, width=230, height=130),
+                region=RelativeRegion(x=0.80, y=0.0, width=0.20, height=0.20),
                 scale_min=0.4,
                 scale_max=1.1,
                 scale_step=0.05,
@@ -27,7 +27,27 @@ class Strategy:
                 template="templates/close-end-1.png",
                 threshold=0.90,
                 match_mode="color",
-                region=Region(x=80, y=0, width=220, height=130),
+                region=RelativeRegion(x=0.0, y=0.0, width=0.25, height=0.20),
+                scale_min=0.4,
+                scale_max=1.1,
+                scale_step=0.05,
+            ),
+            TargetSpec(
+                name="close_end_3",
+                template="templates/close-end-3.png",
+                threshold=0.75,
+                match_mode="color",
+                region=RelativeRegion(x=0.80, y=0.0, width=0.20, height=0.20),
+                scale_min=0.4,
+                scale_max=1.1,
+                scale_step=0.05,
+            ),
+            TargetSpec(
+                name="close_end_4",
+                template="templates/close-end-4.png",
+                threshold=0.75,
+                match_mode="color",
+                region=RelativeRegion(x=0.80, y=0.0, width=0.20, height=0.20),
                 scale_min=0.4,
                 scale_max=1.1,
                 scale_step=0.05,
@@ -84,6 +104,10 @@ class Strategy:
             return self._close_or_wait("close_end_2")
         if "close_end_1" in context.detections:
             return self._close_or_wait("close_end_1")
+        if "close_end_3" in context.detections:
+            return self._close_or_wait("close_end_3")
+        if "close_end_4" in context.detections:
+            return self._close_or_wait("close_end_4")
 
         self._reset_close_limit()
         if "reward_confirm_marker" in context.detections:

@@ -5,7 +5,13 @@ from pathlib import Path
 
 from .actions import ActionExecutor
 from .actions import DryRunBackend
-from .backends import CaptureBackendError, StaticImageCaptureBackend, create_capture_backend
+from .backends import (
+    CaptureBackendError,
+    StaticImageCaptureBackend,
+    create_capture_backend,
+    format_window_list,
+    list_windows,
+)
 from .config_loader import load_flow
 from .game_loader import GameLoadError, load_game, load_strategy
 from .rules import RuleEngine
@@ -156,7 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--capture-backend",
-        choices=["fullscreen", "window", "replay"],
+        choices=["fullscreen", "window", "replay", "adb"],
         default="fullscreen",
         help="Capture backend for live, watch, capture, and strategy modes.",
     )
@@ -166,9 +172,42 @@ def build_parser() -> argparse.ArgumentParser:
         help="Window title keyword required by --capture-backend window.",
     )
     parser.add_argument(
-        "--replay-screens",
+        "--window-hwnd",
+        type=parse_int,
         default=None,
-        help="Comma-separated screenshot paths required by --capture-backend replay.",
+        help="Exact window handle for --capture-backend window. Accepts decimal or 0x hex.",
+    )
+    parser.add_argument(
+        "--list-windows",
+        action="store_true",
+        help="List top-level Windows windows and exit.",
+    )
+    parser.add_argument(
+        "--replay-screens",
+        action="append",
+        nargs="+",
+        default=None,
+        help=(
+            "Replay screenshot paths required by --capture-backend replay. "
+            "Supports space-separated paths, repeated flags, and comma-separated legacy values."
+        ),
+    )
+    parser.add_argument(
+        "--adb-path",
+        type=Path,
+        default=None,
+        help="Path to adb executable required by --capture-backend adb.",
+    )
+    parser.add_argument(
+        "--adb-serial",
+        default=None,
+        help="ADB device serial required by --capture-backend adb.",
+    )
+    parser.add_argument(
+        "--debug-save-capture",
+        type=Path,
+        default=None,
+        help="Save each strategy capture for debugging. Multi-loop runs add a loop suffix.",
     )
     return parser
 
@@ -176,6 +215,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     root = Path(__file__).resolve().parents[2]
     args = build_parser().parse_args()
+    if args.list_windows:
+        print(format_window_list(list_windows()))
+        return
     flow_path = args.flow or root / "configs" / "default-flow.json"
 
     flow = load_flow(flow_path)
@@ -303,16 +345,32 @@ def build_capture_backend(args: argparse.Namespace):
         return create_capture_backend(
             args.capture_backend,
             window_title=args.window_title,
+            window_hwnd=args.window_hwnd,
+            adb_path=args.adb_path,
+            adb_serial=args.adb_serial,
             replay_screens=parse_replay_screens(args.replay_screens),
         )
     except CaptureBackendError as exc:
         raise SystemExit(str(exc)) from exc
 
 
-def parse_replay_screens(raw_value: str | None) -> list[Path]:
+def parse_replay_screens(raw_value: list[list[str]] | str | None) -> list[Path]:
     if raw_value is None:
         return []
-    return [Path(part.strip()) for part in raw_value.split(",") if part.strip()]
+    if isinstance(raw_value, str):
+        groups = [[raw_value]]
+    else:
+        groups = raw_value
+
+    paths: list[Path] = []
+    for group in groups:
+        for value in group:
+            paths.extend(Path(part.strip()) for part in value.split(",") if part.strip())
+    return paths
+
+
+def parse_int(raw_value: str) -> int:
+    return int(raw_value, 0)
 
 
 def build_strategy_capture_backend(args: argparse.Namespace):
@@ -342,6 +400,7 @@ def run_strategy_mode(args: argparse.Namespace, root: Path) -> None:
             root=root,
             output_dir=root / "output" / "strategy",
             max_loops=args.max_loops,
+            debug_save_capture=args.debug_save_capture,
         )
         runner.run()
     finally:

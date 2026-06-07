@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -31,6 +32,7 @@ class StrategyRunner:
         root: Path,
         output_dir: Path,
         max_loops: int,
+        debug_save_capture: Path | None = None,
         matcher: Matcher = match_template,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -43,6 +45,7 @@ class StrategyRunner:
         self.root = root
         self.output_dir = output_dir
         self.max_loops = max_loops
+        self.debug_save_capture = debug_save_capture
         self.matcher = matcher
         self.sleep = sleep
 
@@ -56,8 +59,11 @@ class StrategyRunner:
             except CaptureBackendError as exc:
                 print(f"Capture error: {exc}")
                 break
+            print(f"Capture image size: width={frame.size[0]}, height={frame.size[1]}")
+            if self.debug_save_capture is not None:
+                self._save_debug_capture(frame.path, loop_index)
 
-            detections = self._detect_targets(frame.path)
+            detections = self._detect_targets(frame.path, frame.size)
             for detection in detections.values():
                 print(
                     f"Detected: {detection.name}\n"
@@ -82,12 +88,23 @@ class StrategyRunner:
                 self.sleep(decision.wait_seconds)
         return completed
 
-    def _detect_targets(self, screen_path: Path) -> dict[str, DetectionResult]:
+    def _detect_targets(
+        self,
+        screen_path: Path,
+        image_size: tuple[int, int],
+    ) -> dict[str, DetectionResult]:
         detections: dict[str, DetectionResult] = {}
         for target in self.strategy.targets():
             template_path = resolve_template_path(self.game, self.root, target.template)
             if not template_path.exists():
                 print(f"Template missing: {target.name} -> {template_path}")
+                continue
+            region = resolve_target_region(target, image_size)
+            if region is not None and not region_overlaps(region, image_size):
+                print(
+                    f"Warning: target region does not overlap capture image; "
+                    f"skipping {target.name}: region={region} image_size={image_size}"
+                )
                 continue
             try:
                 match = self.matcher(
@@ -97,7 +114,7 @@ class StrategyRunner:
                     scale_min=target.scale_min,
                     scale_max=target.scale_max,
                     scale_step=target.scale_step,
-                    region=target.region.as_tuple if target.region is not None else None,
+                    region=region,
                 )
             except (FileNotFoundError, RuntimeError, ValueError) as exc:
                 print(f"Detection error: {target.name}: {exc}")
@@ -106,6 +123,15 @@ class StrategyRunner:
                 continue
             detections[target.name] = _to_detection_result(target, template_path, match)
         return detections
+
+    def _save_debug_capture(self, capture_path: Path, loop_index: int) -> None:
+        assert self.debug_save_capture is not None
+        output_path = self.debug_save_capture
+        if self.max_loops > 1:
+            output_path = with_loop_suffix(output_path, loop_index)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(capture_path, output_path)
+        print(f"Debug capture saved: {output_path}")
 
     def _execute_decision(
         self,
@@ -161,3 +187,28 @@ def _to_detection_result(
         scale=match.scale,
         threshold=target.threshold,
     )
+
+
+def resolve_target_region(
+    target: TargetSpec,
+    image_size: tuple[int, int],
+) -> tuple[int, int, int, int] | None:
+    if target.region is None:
+        return None
+    if hasattr(target.region, "resolve"):
+        return target.region.resolve(image_size)  # type: ignore[union-attr]
+    return target.region.as_tuple
+
+
+def region_overlaps(region: tuple[int, int, int, int], image_size: tuple[int, int]) -> bool:
+    image_width, image_height = image_size
+    x, y, width, height = region
+    if x < 0 or y < 0 or width <= 0 or height <= 0:
+        return False
+    right = min(image_width, x + width)
+    bottom = min(image_height, y + height)
+    return x < image_width and y < image_height and right > x and bottom > y
+
+
+def with_loop_suffix(path: Path, loop_index: int) -> Path:
+    return path.with_name(f"{path.stem}-loop-{loop_index}{path.suffix}")

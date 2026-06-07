@@ -12,6 +12,7 @@ from PIL import Image
 
 from cats_automatic.actions import ClickAction, DryRunBackend, TapAction
 from cats_automatic.backends import (
+    AdbCaptureBackend,
     CaptureBackendError,
     ReplayCaptureBackend,
     StaticImageCaptureBackend,
@@ -28,13 +29,13 @@ from cats_automatic.game_loader import (
 from cats_automatic.games.cats.strategies.ad_reward import Strategy as AdRewardStrategy
 from cats_automatic.strategy_base import (
     DetectionResult,
-    Region,
+    RelativeRegion,
     StrategyContext,
     StrategyDecision,
     TargetSpec,
 )
 from cats_automatic.main import build_parser, build_strategy_capture_backend, parse_replay_screens
-from cats_automatic.strategy_runner import StrategyRunner
+from cats_automatic.strategy_runner import StrategyRunner, resolve_target_region
 from cats_automatic.vision import MatchResult
 from cats_automatic.window_capture import WindowFrame
 
@@ -51,6 +52,8 @@ def test_strategy_loader_loads_named_strategy() -> None:
     assert [target.name for target in strategy.targets()] == [
         "close_end_2",
         "close_end_1",
+        "close_end_3",
+        "close_end_4",
         "page_marker",
         "reward_confirm_marker",
         "confirm_button",
@@ -61,11 +64,19 @@ def test_strategy_loader_loads_named_strategy() -> None:
     assert targets["close_end_2"].template == "templates/close-end-2.png"
     assert targets["close_end_2"].threshold == 0.75
     assert targets["close_end_2"].match_mode == "color"
-    assert targets["close_end_2"].region == Region(x=1050, y=0, width=230, height=130)
+    assert targets["close_end_2"].region == RelativeRegion(x=0.80, y=0.0, width=0.20, height=0.20)
     assert targets["close_end_1"].template == "templates/close-end-1.png"
     assert targets["close_end_1"].threshold == 0.90
     assert targets["close_end_1"].match_mode == "color"
-    assert targets["close_end_1"].region == Region(x=80, y=0, width=220, height=130)
+    assert targets["close_end_1"].region == RelativeRegion(x=0.0, y=0.0, width=0.25, height=0.20)
+    assert targets["close_end_3"].template == "templates/close-end-3.png"
+    assert targets["close_end_3"].threshold == 0.75
+    assert targets["close_end_3"].match_mode == "color"
+    assert targets["close_end_3"].region == RelativeRegion(x=0.80, y=0.0, width=0.20, height=0.20)
+    assert targets["close_end_4"].template == "templates/close-end-4.png"
+    assert targets["close_end_4"].threshold == 0.75
+    assert targets["close_end_4"].match_mode == "color"
+    assert targets["close_end_4"].region == RelativeRegion(x=0.80, y=0.0, width=0.20, height=0.20)
     assert targets["page_marker"].template == "templates/page-marker.png"
     assert targets["page_marker"].threshold == 0.80
     assert targets["page_marker"].match_mode == "color"
@@ -170,6 +181,16 @@ def test_ad_reward_strategy_clicks_left_close_when_right_missing() -> None:
     decision = strategy.decide(context)
 
     assert decision == StrategyDecision.click("close_end_1", "close_ad", "close_ad")
+
+
+@pytest.mark.parametrize("target_name", ["close_end_1", "close_end_2", "close_end_3", "close_end_4"])
+def test_ad_reward_strategy_clicks_any_close_template(target_name: str) -> None:
+    strategy = AdRewardStrategy()
+    context = _context_with_detections({target_name: _detection(target_name)})
+
+    decision = strategy.decide(context)
+
+    assert decision == StrategyDecision.click(target_name, "close_ad", "close_ad")
 
 
 def test_ad_reward_strategy_prefers_right_close_over_left_close() -> None:
@@ -359,6 +380,12 @@ def test_ad_reward_page_targets_resolve_to_game_templates() -> None:
     assert resolve_template_path(game, root, targets["close_end_1"].template) == (
         game.templates_dir / "close-end-1.png"
     )
+    assert resolve_template_path(game, root, targets["close_end_3"].template) == (
+        game.templates_dir / "close-end-3.png"
+    )
+    assert resolve_template_path(game, root, targets["close_end_4"].template) == (
+        game.templates_dir / "close-end-4.png"
+    )
 
 
 def test_strategy_runner_executes_finite_dry_run_loop(tmp_path: Path) -> None:
@@ -434,6 +461,227 @@ def test_replay_capture_backend_args_parse_multiple_screens() -> None:
     assert parse_replay_screens(args.replay_screens) == [
         Path("samples/cats/home_screen.png"),
         Path("samples/cats/jiao_juan_page.png"),
+    ]
+
+
+def test_replay_capture_backend_args_parse_space_separated_screens() -> None:
+    args = build_parser().parse_args(
+        [
+            "--game",
+            "cats",
+            "--strategy",
+            "ad_reward",
+            "--capture-backend",
+            "replay",
+            "--replay-screens",
+            "samples/cats/adb_home.png",
+            "samples/cats/adb_jiao_juan_page.png",
+            "samples/cats/adb_ad_close.png",
+            "samples/cats/adb_reward_confirm.png",
+            "--max-loops",
+            "4",
+        ]
+    )
+
+    assert parse_replay_screens(args.replay_screens) == [
+        Path("samples/cats/adb_home.png"),
+        Path("samples/cats/adb_jiao_juan_page.png"),
+        Path("samples/cats/adb_ad_close.png"),
+        Path("samples/cats/adb_reward_confirm.png"),
+    ]
+
+
+def test_replay_capture_backend_args_parse_repeated_flags() -> None:
+    args = build_parser().parse_args(
+        [
+            "--game",
+            "cats",
+            "--strategy",
+            "ad_reward",
+            "--capture-backend",
+            "replay",
+            "--replay-screens",
+            "samples/cats/adb_home.png",
+            "--replay-screens",
+            "samples/cats/adb_jiao_juan_page.png",
+            "--replay-screens",
+            "samples/cats/adb_ad_close.png",
+            "--replay-screens",
+            "samples/cats/adb_reward_confirm.png",
+            "--max-loops",
+            "4",
+        ]
+    )
+
+    assert parse_replay_screens(args.replay_screens) == [
+        Path("samples/cats/adb_home.png"),
+        Path("samples/cats/adb_jiao_juan_page.png"),
+        Path("samples/cats/adb_ad_close.png"),
+        Path("samples/cats/adb_reward_confirm.png"),
+    ]
+
+
+def test_replay_capture_backend_args_parse_single_screen() -> None:
+    args = build_parser().parse_args(
+        [
+            "--game",
+            "cats",
+            "--strategy",
+            "ad_reward",
+            "--capture-backend",
+            "replay",
+            "--replay-screens",
+            "samples/cats/adb_home.png",
+            "--max-loops",
+            "1",
+        ]
+    )
+
+    assert parse_replay_screens(args.replay_screens) == [Path("samples/cats/adb_home.png")]
+
+
+def test_debug_save_capture_arg_parses_path() -> None:
+    args = build_parser().parse_args(
+        [
+            "--game",
+            "cats",
+            "--strategy",
+            "ad_reward",
+            "--capture-backend",
+            "window",
+            "--window-title",
+            "ANG",
+            "--debug-save-capture",
+            "output/ang-current.png",
+            "--max-loops",
+            "1",
+        ]
+    )
+
+    assert args.debug_save_capture == Path("output/ang-current.png")
+
+
+def test_list_windows_arg_parses() -> None:
+    args = build_parser().parse_args(["--list-windows"])
+
+    assert args.list_windows is True
+
+
+def test_window_hwnd_arg_parses_decimal_and_hex() -> None:
+    decimal_args = build_parser().parse_args(["--window-hwnd", "123456"])
+    hex_args = build_parser().parse_args(["--window-hwnd", "0x1e240"])
+
+    assert decimal_args.window_hwnd == 123456
+    assert hex_args.window_hwnd == 123456
+
+
+def test_adb_capture_backend_args_parse() -> None:
+    args = build_parser().parse_args(
+        [
+            "--game",
+            "cats",
+            "--strategy",
+            "ad_reward",
+            "--capture-backend",
+            "adb",
+            "--adb-path",
+            r"C:\Program Files\ASUS\GlideX\adb.exe",
+            "--adb-serial",
+            "emulator-5556",
+            "--max-loops",
+            "1",
+        ]
+    )
+
+    assert args.capture_backend == "adb"
+    assert args.adb_path == Path(r"C:\Program Files\ASUS\GlideX\adb.exe")
+    assert args.adb_serial == "emulator-5556"
+
+
+def test_adb_capture_backend_reports_missing_adb_path(tmp_path: Path) -> None:
+    with pytest.raises(CaptureBackendError, match="ADB executable does not exist"):
+        AdbCaptureBackend(tmp_path / "missing-adb.exe", "emulator-5556")
+
+
+def test_adb_capture_backend_reports_no_devices(tmp_path: Path) -> None:
+    adb = tmp_path / "adb.exe"
+    adb.touch()
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(command, 0, stdout=b"List of devices attached\n\n")
+
+    with pytest.raises(CaptureBackendError, match="ADB devices returned no connected devices"):
+        AdbCaptureBackend(adb, "emulator-5556", runner=runner)
+
+
+def test_adb_capture_backend_reports_missing_serial(tmp_path: Path) -> None:
+    adb = tmp_path / "adb.exe"
+    adb.touch()
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=b"List of devices attached\nemulator-5554\tdevice\n",
+        )
+
+    with pytest.raises(CaptureBackendError, match="ADB serial not connected"):
+        AdbCaptureBackend(adb, "emulator-5556", runner=runner)
+
+
+def test_adb_capture_backend_reports_screencap_failure(tmp_path: Path) -> None:
+    adb = tmp_path / "adb.exe"
+    adb.touch()
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
+        if command[-1] == "devices":
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=b"List of devices attached\nemulator-5556\tdevice\n",
+            )
+        return subprocess.CompletedProcess(command, 1, stdout=b"", stderr=b"screencap failed")
+
+    backend = AdbCaptureBackend(adb, "emulator-5556", runner=runner)
+
+    with pytest.raises(CaptureBackendError, match="ADB screencap failed: screencap failed"):
+        backend.capture(tmp_path / "screen.png")
+
+
+def test_adb_capture_backend_saves_screencap_png(tmp_path: Path) -> None:
+    adb = tmp_path / "adb.exe"
+    adb.touch()
+    png_path = tmp_path / "fixture.png"
+    Image.new("RGB", (32, 24), "green").save(png_path)
+    png_bytes = png_path.read_bytes()
+    commands: list[list[str]] = []
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
+        commands.append(command)
+        if command[-1] == "devices":
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=b"List of devices attached\nemulator-5556\tdevice\n",
+            )
+        return subprocess.CompletedProcess(command, 0, stdout=png_bytes, stderr=b"")
+
+    backend = AdbCaptureBackend(adb, "emulator-5556", runner=runner)
+    output = tmp_path / "screen.png"
+    frame = backend.capture(output)
+
+    assert output.exists()
+    assert frame.path == output
+    assert frame.size == (32, 24)
+    assert frame.client_origin == (0, 0)
+    assert all("tap" not in command for command in commands)
+    assert commands[-1] == [
+        str(adb),
+        "-s",
+        "emulator-5556",
+        "exec-out",
+        "screencap",
+        "-p",
     ]
 
 
@@ -532,6 +780,71 @@ def test_strategy_runner_can_use_static_screen_backend(tmp_path: Path) -> None:
 
     assert completed == 1
     assert [action.x for action in action_backend.clicks] == [25]
+
+
+def test_strategy_runner_saves_debug_capture(tmp_path: Path) -> None:
+    screen = tmp_path / "screen.png"
+    Image.new("RGB", (64, 64), "white").save(screen)
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    Image.new("RGB", (4, 4), "white").save(templates / "target.png")
+    debug_capture = tmp_path / "debug" / "capture.png"
+    runner = StrategyRunner(
+        game=GameDefinition("test", tmp_path / "config.json", templates),
+        strategy=StaticStrategy(),
+        capture_backend=StaticImageCaptureBackend(screen),
+        action_backend=RecordingActionBackend(),
+        root=tmp_path,
+        output_dir=tmp_path / "output",
+        max_loops=1,
+        debug_save_capture=debug_capture,
+        matcher=lambda *_args, **_kwargs: MatchResult(0.95, (10, 20), (30, 40)),
+        sleep=lambda _: None,
+    )
+
+    runner.run()
+
+    assert debug_capture.exists()
+
+
+def test_relative_region_resolves_from_image_size() -> None:
+    target = TargetSpec(
+        "close_end_2",
+        "templates/close-end-2.png",
+        0.75,
+        region=RelativeRegion(x=0.80, y=0.0, width=0.20, height=0.20),
+    )
+
+    assert resolve_target_region(target, (640, 480)) == (512, 0, 128, 96)
+
+
+def test_out_of_bounds_region_warns_and_skips_target(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    screen = tmp_path / "screen.png"
+    Image.new("RGB", (100, 100), "white").save(screen)
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    Image.new("RGB", (4, 4), "white").save(templates / "target.png")
+    action_backend = RecordingActionBackend()
+    runner = StrategyRunner(
+        game=GameDefinition("test", tmp_path / "config.json", templates),
+        strategy=OutOfBoundsRegionStrategy(),
+        capture_backend=StaticImageCaptureBackend(screen),
+        action_backend=action_backend,
+        root=tmp_path,
+        output_dir=tmp_path / "output",
+        max_loops=1,
+        matcher=lambda *_args, **_kwargs: MatchResult(0.95, (10, 20), (30, 40)),
+        sleep=lambda _: None,
+    )
+
+    completed = runner.run()
+
+    assert completed == 1
+    assert not action_backend.clicks
+    assert "Warning: target region does not overlap capture image" in capsys.readouterr().out
 
 
 def test_ad_reward_static_home_screen_keeps_ad_entry_detection() -> None:
@@ -677,7 +990,7 @@ def test_ad_reward_close_button_detection_passes_regions(tmp_path: Path) -> None
     Image.new("RGB", (1280, 720), "black").save(screen)
     templates = tmp_path / "templates"
     templates.mkdir()
-    for name in ("close-end-1.png", "close-end-2.png"):
+    for name in ("close-end-1.png", "close-end-2.png", "close-end-3.png", "close-end-4.png"):
         (templates / name).touch()
     seen_regions: dict[str, tuple[int, int, int, int] | None] = {}
 
@@ -699,8 +1012,10 @@ def test_ad_reward_close_button_detection_passes_regions(tmp_path: Path) -> None
 
     runner.run()
 
-    assert seen_regions["close-end-2.png"] == (1050, 0, 230, 130)
-    assert seen_regions["close-end-1.png"] == (80, 0, 220, 130)
+    assert seen_regions["close-end-2.png"] == (1024, 0, 256, 144)
+    assert seen_regions["close-end-1.png"] == (0, 0, 320, 144)
+    assert seen_regions["close-end-3.png"] == (1024, 0, 256, 144)
+    assert seen_regions["close-end-4.png"] == (1024, 0, 256, 144)
 
 
 @pytest.mark.parametrize(
@@ -924,7 +1239,7 @@ def test_dry_run_backend_does_not_call_real_input_api(capsys: pytest.CaptureFixt
 
 
 def test_create_window_backend_requires_title() -> None:
-    with pytest.raises(CaptureBackendError, match="--window-title is required"):
+    with pytest.raises(CaptureBackendError, match="--window-title or --window-hwnd is required"):
         create_capture_backend("window")
 
 
@@ -932,6 +1247,16 @@ def test_window_backend_reports_missing_window(tmp_path: Path) -> None:
     backend = WindowCaptureBackend("Missing", finder=lambda _: [])
 
     with pytest.raises(CaptureBackendError, match="No window matched title keyword"):
+        backend.capture(tmp_path / "window.png")
+
+
+def test_window_backend_reports_missing_hwnd(tmp_path: Path) -> None:
+    backend = WindowCaptureBackend(
+        window_hwnd=123456,
+        hwnd_finder=lambda _: None,
+    )
+
+    with pytest.raises(CaptureBackendError, match="No window found for hwnd: 123456"):
         backend.capture(tmp_path / "window.png")
 
 
@@ -949,6 +1274,8 @@ def test_window_backend_captures_window_bbox(tmp_path: Path) -> None:
     calls: list[dict[str, object]] = []
 
     class FakeImage:
+        size = (100, 200)
+
         def save(self, path: Path) -> None:
             path.touch()
 
@@ -966,6 +1293,55 @@ def test_window_backend_captures_window_bbox(tmp_path: Path) -> None:
     assert calls == [{"bbox": (10, 20, 110, 220), "all_screens": True}]
     assert frame.client_origin == (10, 20)
     assert frame.size == (100, 200)
+
+
+def test_window_backend_multiple_matches_selects_largest_and_logs(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class FakeImage:
+        size = (300, 300)
+
+        def save(self, path: Path) -> None:
+            path.touch()
+
+    backend = WindowCaptureBackend(
+        "ANG",
+        finder=lambda _: [
+            WindowRect("ANG small", 0, 0, 100, 100, hwnd=1),
+            WindowRect("ANG large", 0, 0, 300, 300, hwnd=2),
+        ],
+        grabber=lambda **_: FakeImage(),
+    )
+
+    frame = backend.capture(tmp_path / "window.png")
+    output = capsys.readouterr().out
+
+    assert frame.title == "ANG large"
+    assert "matches=2" in output
+    assert "selected largest area" in output
+    assert "Use --window-hwnd" in output
+
+
+def test_window_backend_selects_exact_hwnd(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    class FakeImage:
+        size = (120, 80)
+
+        def save(self, path: Path) -> None:
+            path.touch()
+
+    backend = WindowCaptureBackend(
+        window_hwnd=42,
+        hwnd_finder=lambda hwnd: WindowRect("ANG exact", 10, 20, 130, 100, hwnd=hwnd),
+        grabber=lambda **_: FakeImage(),
+    )
+
+    frame = backend.capture(tmp_path / "window.png")
+    output = capsys.readouterr().out
+
+    assert frame.title == "ANG exact"
+    assert "selection mode: exact hwnd" in output
+    assert "hwnd=42" in output
 
 
 def _detection(name: str) -> DetectionResult:
@@ -998,6 +1374,23 @@ class StaticStrategy:
     def decide(self, context: StrategyContext) -> StrategyDecision:
         assert "target" in context.detections
         return StrategyDecision.click("target", "click_target")
+
+
+class OutOfBoundsRegionStrategy:
+    def targets(self) -> list[TargetSpec]:
+        return [TargetSpec("target", "templates/target.png", 0.5, region=RegionLikeOutOfBounds())]
+
+    def decide(self, context: StrategyContext) -> StrategyDecision:
+        if "target" in context.detections:
+            return StrategyDecision.click("target", "click_target")
+        return StrategyDecision.wait(0.0, "target_not_detected")
+
+
+@dataclass(frozen=True)
+class RegionLikeOutOfBounds:
+    @property
+    def as_tuple(self) -> tuple[int, int, int, int]:
+        return (200, 0, 50, 50)
 
 
 @dataclass

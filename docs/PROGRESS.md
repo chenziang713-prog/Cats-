@@ -51,6 +51,14 @@ can stay stable while game-specific files move under `games/<game_name>/`.
 - Replay capture backend: `--capture-backend replay --replay-screens ...`
   feeds a fixed screenshot sequence into strategy mode for full dry-run chain
   testing.
+- Window/debug capture hardening: `--debug-save-capture ...` saves strategy
+  captures, logs captured image dimensions, and close-button regions are now
+  computed relative to the actual capture size.
+- Window listing and explicit hwnd selection: `--list-windows` prints visible
+  window metadata, and `--window-hwnd` lets window capture target an exact
+  handle instead of relying only on fuzzy title matching.
+- ADB screenshot backend: `--capture-backend adb` uses `adb exec-out screencap
+  -p` to capture a borderless emulator screenshot for dry-run strategy testing.
 - Window capture backend interface and clear error handling.
 - Static strategy screenshot backend: `--game cats --strategy ad_reward --screen ...`
   runs against a fixed image and bypasses fullscreen/window capture.
@@ -122,6 +130,13 @@ can stay stable while game-specific files move under `games/<game_name>/`.
   `confirm_button` after `reward_confirm_marker` confirms the page.
 - Replay mode reads screenshots in order and reuses the last screenshot when
   loops outnumber screenshots. It never captures the desktop or controls input.
+- Target regions that do not overlap the current capture are skipped with a
+  warning instead of turning the whole detection pass into an error.
+- The window backend still captures the selected top-level window rectangle via
+  PIL `ImageGrab`; this can include window borders or wrong/occluded pixels
+  depending on the emulator and compositor.
+- ADB mode performs screenshot capture only. It intentionally does not provide
+  `adb tap`, real clicks, keyboard input, or emulator control.
 
 ## Current Stable Small Feature
 
@@ -208,6 +223,33 @@ Decision: click_ad_entry
 Decision: click_watch_ad_button
 Decision: close_ad
 Decision: confirm_reward
+```
+
+Run an ANG window debug check:
+
+```powershell
+.\.venv\Scripts\python.exe -m cats_automatic.main --game cats --strategy ad_reward --capture-backend window --window-title "ANG" --debug-save-capture output\ang-current.png --max-loops 1
+```
+
+Use the printed `Capture image size` and the saved `output/ang-current.png` to
+verify what the window backend actually captured.
+
+List windows first when title matching is ambiguous:
+
+```powershell
+.\.venv\Scripts\python.exe -m cats_automatic.main --list-windows
+```
+
+Then run with an exact handle:
+
+```powershell
+.\.venv\Scripts\python.exe -m cats_automatic.main --game cats --strategy ad_reward --capture-backend window --window-hwnd 123456 --debug-save-capture output\ang-current.png --max-loops 1
+```
+
+Run an ADB screenshot check:
+
+```powershell
+.\.venv\Scripts\python.exe -m cats_automatic.main --game cats --strategy ad_reward --capture-backend adb --adb-path "C:\Program Files\ASUS\GlideX\adb.exe" --adb-serial emulator-5556 --debug-save-capture output\adb-current.png --max-loops 1
 ```
 
 ## Future Real-Click Candidates

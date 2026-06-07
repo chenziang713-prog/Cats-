@@ -155,6 +155,53 @@ Python interpreter: C:\Users\shenj\Documents\CATSautomatic\.venv\Scripts\python.
 This should print decisions in order: `click_ad_entry`,
 `click_watch_ad_button`, `close_ad`, and `confirm_reward`.
 
+Use this configuration to debug an ANG window capture:
+
+```text
+Module name: cats_automatic.main
+Parameters: --game cats --strategy ad_reward --capture-backend window --window-title "ANG" --debug-save-capture output\ang-current.png --max-loops 1
+Working directory: C:\Users\shenj\Documents\CATSautomatic
+Python interpreter: C:\Users\shenj\Documents\CATSautomatic\.venv\Scripts\python.exe
+```
+
+This saves `output\ang-current.png` and prints the captured image size. The
+close-button regions are relative to the captured image dimensions, so ANG
+captures smaller than 1280x720 should not fail just because a fixed close
+region is outside the image.
+
+To list windows from IDEA, use:
+
+```text
+Module name: cats_automatic.main
+Parameters: --list-windows
+Working directory: C:\Users\shenj\Documents\CATSautomatic
+Python interpreter: C:\Users\shenj\Documents\CATSautomatic\.venv\Scripts\python.exe
+```
+
+If title matching finds the wrong ANG window, copy the `hwnd` from the list and
+run:
+
+```text
+Module name: cats_automatic.main
+Parameters: --game cats --strategy ad_reward --capture-backend window --window-hwnd 123456 --debug-save-capture output\ang-current.png --max-loops 1
+Working directory: C:\Users\shenj\Documents\CATSautomatic
+Python interpreter: C:\Users\shenj\Documents\CATSautomatic\.venv\Scripts\python.exe
+```
+
+`--window-title` is fuzzy matching. `--window-hwnd` is exact selection.
+
+Use this configuration to capture via ADB instead of a Windows window:
+
+```text
+Module name: cats_automatic.main
+Parameters: --game cats --strategy ad_reward --capture-backend adb --adb-path "C:\Program Files\ASUS\GlideX\adb.exe" --adb-serial emulator-5556 --debug-save-capture output\adb-current.png --max-loops 1
+Working directory: C:\Users\shenj\Documents\CATSautomatic
+Python interpreter: C:\Users\shenj\Documents\CATSautomatic\.venv\Scripts\python.exe
+```
+
+ADB capture saves `output\adb-current.png` and still uses dry-run actions only.
+It does not call `adb tap`.
+
 Use this configuration to capture only a matching emulator window:
 
 ```text
