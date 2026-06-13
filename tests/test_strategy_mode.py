@@ -41,6 +41,7 @@ from cats_automatic.main import (
     build_strategy_action_backend,
     build_strategy_capture_backend,
     parse_replay_screens,
+    runtime_root,
 )
 from cats_automatic.strategy_runner import StrategyRunner, resolve_target_region
 from cats_automatic.vision import MatchResult
@@ -1216,6 +1217,13 @@ def test_window_hwnd_arg_parses_decimal_and_hex() -> None:
 
     assert decimal_args.window_hwnd == 123456
     assert hex_args.window_hwnd == 123456
+
+
+def test_runtime_root_uses_exe_directory_when_frozen(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", r"C:\Release\CATSautomatic-cli.exe")
+
+    assert runtime_root() == Path(r"C:\Release")
 
 
 def test_adb_capture_backend_args_parse() -> None:

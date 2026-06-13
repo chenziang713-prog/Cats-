@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from .actions import ActionBackend, ActionExecutor, AdbActionBackend, DryRunBackend
@@ -236,20 +237,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    root = Path(__file__).resolve().parents[2]
+    root = runtime_root()
     args = build_parser().parse_args()
     if args.list_windows:
         print(format_window_list(list_windows()))
         return
     flow_path = args.flow or root / "configs" / "default-flow.json"
 
-    flow = load_flow(flow_path)
-    if args.threshold is not None:
-        flow = flow.with_threshold(args.threshold)
-
     if args.game:
         run_strategy_mode(args, root)
         return
+
+    flow = load_flow(flow_path)
+    if args.threshold is not None:
+        flow = flow.with_threshold(args.threshold)
 
     if args.allow_click:
         raise SystemExit(
@@ -483,6 +484,12 @@ def build_strategy_action_backend(args: argparse.Namespace) -> ActionBackend:
 
 def strategy_max_actions(args: argparse.Namespace) -> int:
     return args.max_actions if args.max_actions is not None else 8
+
+
+def runtime_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[2]
 
 
 def print_run_record_summary(summary) -> None:
