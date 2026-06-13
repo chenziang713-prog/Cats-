@@ -118,7 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-actions",
         type=int,
         default=None,
-        help="Maximum clicks/dry-run actions. Defaults to 1, or two per scenario cycle.",
+        help="Maximum clicks/dry-run actions. Strategy mode defaults to 8 per reward cycle.",
     )
     parser.add_argument(
         "--repeat-actions",
@@ -165,6 +165,23 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=3,
         help="Maximum strategy loops. Defaults to 3.",
+    )
+    parser.add_argument(
+        "--repeat-after-reward",
+        action="store_true",
+        help="After confirm_reward succeeds, wait and start the next reward cycle.",
+    )
+    parser.add_argument(
+        "--cycle-wait-seconds",
+        type=float,
+        default=1800.0,
+        help="Seconds to wait after each completed reward cycle. Defaults to 1800.",
+    )
+    parser.add_argument(
+        "--max-cycles",
+        type=int,
+        default=0,
+        help="Maximum reward cycles in repeat mode. 0 means unlimited.",
     )
     parser.add_argument(
         "--capture-backend",
@@ -397,13 +414,16 @@ def run_strategy_mode(args: argparse.Namespace, root: Path) -> None:
     print(f"Loaded game: {game.name}")
     print(f"Loaded strategy: {args.strategy or 'default'}")
     print(f"Capture backend: {capture_backend.name}")
-    max_actions_limit = args.max_actions if args.max_actions is not None else 1
+    max_actions_limit = strategy_max_actions(args)
     recorder = RunRecorder(
         output_root=root / "output" / "runs",
         capture_backend=capture_backend.name,
         adb_serial=args.adb_serial or "",
         max_actions_limit=max_actions_limit,
         min_click_confidence=args.min_click_confidence,
+        repeat_after_reward=args.repeat_after_reward,
+        cycle_wait_seconds=args.cycle_wait_seconds,
+        max_cycles=args.max_cycles,
     )
     try:
         action_backend = build_strategy_action_backend(args)
@@ -424,6 +444,9 @@ def run_strategy_mode(args: argparse.Namespace, root: Path) -> None:
             debug_save_capture=args.debug_save_capture,
             run_recorder=recorder,
             stop_file=args.stop_file,
+            repeat_after_reward=args.repeat_after_reward,
+            cycle_wait_seconds=args.cycle_wait_seconds,
+            max_cycles=args.max_cycles,
         )
         runner.run()
     except Exception as exc:
@@ -437,7 +460,7 @@ def run_strategy_mode(args: argparse.Namespace, root: Path) -> None:
 
 def build_strategy_action_backend(args: argparse.Namespace) -> ActionBackend:
     if not args.allow_click:
-        return DryRunBackend(log_file=args.log_file)
+        return DryRunBackend(log_file=args.log_file, max_actions=strategy_max_actions(args))
     if args.capture_backend != "adb":
         raise CaptureBackendError(
             "--allow-click is only allowed with --capture-backend adb. "
@@ -447,16 +470,19 @@ def build_strategy_action_backend(args: argparse.Namespace) -> ActionBackend:
         raise CaptureBackendError("--adb-path is required when --allow-click is used with adb.")
     if args.adb_serial is None or not args.adb_serial.strip():
         raise CaptureBackendError("--adb-serial is required when --allow-click is used with adb.")
-    max_actions = args.max_actions if args.max_actions is not None else 1
     return AdbActionBackend(
         adb_path=args.adb_path,
         adb_serial=args.adb_serial,
-        max_actions=max_actions,
+        max_actions=strategy_max_actions(args),
         click_cooldown=args.click_cooldown,
         min_click_confidence=args.min_click_confidence,
         stop_file=args.stop_file,
         log_file=args.log_file,
     )
+
+
+def strategy_max_actions(args: argparse.Namespace) -> int:
+    return args.max_actions if args.max_actions is not None else 8
 
 
 def print_run_record_summary(summary) -> None:

@@ -5,7 +5,7 @@ import json
 import shutil
 import traceback
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -16,6 +16,7 @@ from .strategy_base import DetectionResult, StrategyDecision
 CLICK_RECORD_FIELDS = [
     "run_id",
     "timestamp",
+    "cycle_index",
     "loop",
     "capture_backend",
     "adb_serial",
@@ -56,6 +57,9 @@ class RunRecorder:
         adb_serial: str = "",
         max_actions_limit: int | None = None,
         min_click_confidence: float = 0.80,
+        repeat_after_reward: bool = False,
+        cycle_wait_seconds: float = 1800.0,
+        max_cycles: int = 0,
         run_id: str | None = None,
     ) -> None:
         self.run_id = run_id or datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -71,10 +75,17 @@ class RunRecorder:
         self.adb_serial = adb_serial
         self.max_actions_limit = max_actions_limit
         self.min_click_confidence = min_click_confidence
+        self.repeat_after_reward = repeat_after_reward
+        self.cycle_wait_seconds = cycle_wait_seconds
+        self.max_cycles = max_cycles
         self.start_time = _timestamp()
         self.end_time = ""
         self.total_loops = 0
         self.total_clicks = 0
+        self.total_cycles_completed = 0
+        self.current_cycle_index = 1
+        self.last_cycle_completed_at = ""
+        self.next_cycle_scheduled_at = ""
         self.last_decision = ""
         self.last_screenshot = ""
         self.stop_reason = "completed"
@@ -94,6 +105,66 @@ class RunRecorder:
         self._events_handle = self.events_path.open("a", encoding="utf-8")
         self._log_handle = self.log_path.open("a", encoding="utf-8")
         self.event("run_started", run_id=self.run_id, capture_backend=capture_backend)
+
+    def set_cycle_index(self, cycle_index: int) -> None:
+        self.current_cycle_index = cycle_index
+
+    def record_cycle_started(self, cycle_index: int) -> None:
+        self.set_cycle_index(cycle_index)
+        self.event("cycle_started", cycle_index=cycle_index)
+
+    def record_cycle_completed(self, cycle_index: int) -> None:
+        completed_at = _timestamp()
+        self.total_cycles_completed += 1
+        self.current_cycle_index = cycle_index
+        self.last_cycle_completed_at = completed_at
+        should_schedule_next = (
+            self.repeat_after_reward
+            and (self.max_cycles == 0 or self.total_cycles_completed < self.max_cycles)
+        )
+        self.next_cycle_scheduled_at = (
+            _future_timestamp(self.cycle_wait_seconds) if should_schedule_next else ""
+        )
+        self.event(
+            "cycle_completed",
+            cycle_index=cycle_index,
+            completed_at=completed_at,
+            total_cycles_completed=self.total_cycles_completed,
+        )
+
+    def record_cycle_wait_started(
+        self,
+        *,
+        cycle_index: int,
+        seconds: float,
+        next_cycle_scheduled_at: str,
+    ) -> None:
+        self.next_cycle_scheduled_at = next_cycle_scheduled_at
+        self.event(
+            "cycle_wait_started",
+            cycle_index=cycle_index,
+            cycle_wait_seconds=seconds,
+            next_cycle_scheduled_at=next_cycle_scheduled_at,
+        )
+
+    def record_cycle_wait_finished(
+        self,
+        *,
+        cycle_index: int,
+        interrupted_by_stop_file: bool,
+    ) -> None:
+        event_name = (
+            "cycle_wait_interrupted_by_stop_file"
+            if interrupted_by_stop_file
+            else "cycle_wait_finished"
+        )
+        if interrupted_by_stop_file:
+            self.next_cycle_scheduled_at = ""
+        self.event(
+            event_name,
+            cycle_index=cycle_index,
+            interrupted_by_stop_file=interrupted_by_stop_file,
+        )
 
     def screenshot_path(self, loop_index: int) -> Path:
         return self.screenshots_dir / f"loop-{loop_index:03d}.png"
@@ -116,6 +187,7 @@ class RunRecorder:
         payload = {
             "run_id": self.run_id,
             "timestamp": _timestamp(),
+            "cycle_index": self.current_cycle_index,
             "loop": loop_index,
             "detections": [
                 {
@@ -160,6 +232,7 @@ class RunRecorder:
         row = {
             "run_id": self.run_id,
             "timestamp": _timestamp(),
+            "cycle_index": self.current_cycle_index,
             "loop": loop_index,
             "capture_backend": self.capture_backend,
             "adb_serial": self.adb_serial,
@@ -274,6 +347,13 @@ class RunRecorder:
             f"adb_serial: {self.adb_serial}",
             f"total_loops: {self.total_loops}",
             f"total_clicks: {self.total_clicks}",
+            f"total_cycles_completed: {self.total_cycles_completed}",
+            f"current_cycle_index: {self.current_cycle_index}",
+            f"last_cycle_completed_at: {self.last_cycle_completed_at}",
+            f"next_cycle_scheduled_at: {self.next_cycle_scheduled_at}",
+            f"repeat_after_reward: {str(self.repeat_after_reward).lower()}",
+            f"cycle_wait_seconds: {self.cycle_wait_seconds:g}",
+            f"max_cycles: {self.max_cycles}",
             f"last_decision: {self.last_decision}",
             "last_adb_tap: "
             + (
@@ -316,6 +396,10 @@ class RunRecorder:
 
 def _timestamp() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _future_timestamp(seconds: float) -> str:
+    return (datetime.now() + timedelta(seconds=seconds)).isoformat(timespec="seconds")
 
 
 def _unique_run_dir(output_root: Path, run_id: str) -> Path:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import shutil
 import time
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from .actions import ActionBackend, ActionResult, ClickAction, TapAction
@@ -37,11 +37,18 @@ class StrategyRunner:
         debug_save_capture: Path | None = None,
         run_recorder: RunRecorder | None = None,
         stop_file: Path | None = None,
+        repeat_after_reward: bool = False,
+        cycle_wait_seconds: float = 1800.0,
+        max_cycles: int = 0,
         matcher: Matcher = match_template,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         if max_loops <= 0:
             raise ValueError("max_loops must be greater than 0.")
+        if cycle_wait_seconds < 0:
+            raise ValueError("cycle_wait_seconds must not be negative.")
+        if max_cycles < 0:
+            raise ValueError("max_cycles must not be negative.")
         self.game = game
         self.strategy = strategy
         self.capture_backend = capture_backend
@@ -52,19 +59,30 @@ class StrategyRunner:
         self.debug_save_capture = debug_save_capture
         self.run_recorder = run_recorder
         self.stop_file = stop_file
+        self.repeat_after_reward = repeat_after_reward
+        self.cycle_wait_seconds = cycle_wait_seconds
+        self.max_cycles = max_cycles
         self.matcher = matcher
         self.sleep = sleep
         self._stop_requested = False
+        self._last_decision: StrategyDecision | None = None
+        self._last_action_result: ActionResult | None = None
+        self._current_cycle_index = 1
 
     def run(self) -> int:
         completed = 0
         stop_reason = "completed"
-        for loop_index in range(1, self.max_loops + 1):
+        loop_index = 1
+        self._start_cycle(self._current_cycle_index)
+        while True:
             if self.stop_file is not None and self.stop_file.exists():
                 stop_reason = "stop_file"
                 self._record_stop(loop_index, "skipped_stop_file")
                 break
+            if not self.repeat_after_reward and loop_index > self.max_loops:
+                break
             print(f"[loop {loop_index}]")
+            print(f"Cycle: {self._current_cycle_index}")
             screen_path = (
                 self.run_recorder.screenshot_path(loop_index)
                 if self.run_recorder is not None
@@ -114,11 +132,25 @@ class StrategyRunner:
             if self._stop_requested:
                 stop_reason = "stop_file"
                 break
+            if self._is_reward_cycle_completed():
+                self._record_cycle_completed()
+                if not self.repeat_after_reward:
+                    stop_reason = "reward_flow_completed"
+                    break
+                if self.max_cycles > 0 and self._completed_cycles() >= self.max_cycles:
+                    stop_reason = "max_cycles_reached"
+                    break
+                if self._cycle_wait():
+                    stop_reason = "stop_file"
+                    break
+                self._current_cycle_index += 1
+                self._start_cycle(self._current_cycle_index)
             if decision.kind == "stop":
                 stop_reason = decision.reason or "stop"
                 break
             if decision.kind == "wait" and decision.wait_seconds > 0:
                 self.sleep(decision.wait_seconds)
+            loop_index += 1
         if self.run_recorder is not None:
             self.run_recorder.finish(stop_reason)
         return completed
@@ -175,6 +207,8 @@ class StrategyRunner:
     ) -> bool:
         if decision.kind == "wait":
             action_result = self.action_backend.wait(decision.wait_seconds, decision.reason)
+            self._last_decision = decision
+            self._last_action_result = action_result
             self._record_action(decision, action_result, None, None)
             return True
         if decision.kind == "stop":
@@ -229,8 +263,71 @@ class StrategyRunner:
         delay_info = None
         if action_result.result == "executed" and decision.post_action_delay_seconds > 0:
             delay_info = self._post_action_delay(decision)
+        self._last_decision = decision
+        self._last_action_result = action_result
         self._record_action(decision, action_result, detection, delay_info)
         return True
+
+    def _is_reward_cycle_completed(self) -> bool:
+        return (
+            self._last_decision is not None
+            and self._last_action_result is not None
+            and self._last_decision.action_name == "confirm_reward"
+            and self._last_action_result.result == "executed"
+        )
+
+    def _completed_cycles(self) -> int:
+        if self.run_recorder is None:
+            return 0
+        return self.run_recorder.total_cycles_completed
+
+    def _start_cycle(self, cycle_index: int) -> None:
+        print(f"Cycle {cycle_index} started")
+        self._stop_requested = False
+        self._last_decision = None
+        self._last_action_result = None
+        if hasattr(self.strategy, "_reset_close_limit"):
+            self.strategy._reset_close_limit()
+        if hasattr(self.action_backend, "reset_cycle"):
+            self.action_backend.reset_cycle()
+        if self.run_recorder is not None:
+            self.run_recorder.record_cycle_started(cycle_index)
+
+    def _record_cycle_completed(self) -> None:
+        print(f"Cycle {self._current_cycle_index} completed")
+        if self.run_recorder is not None:
+            self.run_recorder.record_cycle_completed(self._current_cycle_index)
+
+    def _cycle_wait(self) -> bool:
+        seconds = self.cycle_wait_seconds
+        next_cycle_start = _future_timestamp(seconds)
+        print(f"waiting {seconds:g} seconds before next cycle")
+        print(f"next cycle start time: {next_cycle_start}")
+        if self.run_recorder is not None:
+            self.run_recorder.record_cycle_wait_started(
+                cycle_index=self._current_cycle_index,
+                seconds=seconds,
+                next_cycle_scheduled_at=next_cycle_start,
+            )
+        remaining = seconds
+        interrupted = False
+        while remaining > 0:
+            if self.stop_file is not None and self.stop_file.exists():
+                interrupted = True
+                break
+            sleep_seconds = min(0.5, remaining)
+            self.sleep(sleep_seconds)
+            remaining -= sleep_seconds
+        if self.stop_file is not None and self.stop_file.exists():
+            interrupted = True
+        if interrupted:
+            print("stopped during cycle wait")
+        if self.run_recorder is not None:
+            self.run_recorder.record_cycle_wait_finished(
+                cycle_index=self._current_cycle_index,
+                interrupted_by_stop_file=interrupted,
+            )
+        return interrupted
 
     def _post_action_delay(self, decision: StrategyDecision) -> dict[str, object]:
         seconds = decision.post_action_delay_seconds
@@ -321,6 +418,10 @@ class StrategyRunner:
 
 def _timestamp() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _future_timestamp(seconds: float) -> str:
+    return (datetime.now() + timedelta(seconds=seconds)).isoformat(timespec="seconds")
 
 
 def _to_detection_result(

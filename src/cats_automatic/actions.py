@@ -43,16 +43,24 @@ class ActionBackend(Protocol):
 
     def wait(self, seconds: float, reason: str = "") -> ActionResult: ...
 
+    def reset_cycle(self) -> None: ...
+
 
 class DryRunBackend:
-    def __init__(self, log_file: Path | None = None) -> None:
+    def __init__(self, log_file: Path | None = None, max_actions: int | None = None) -> None:
         self.action_count = 0
+        self.max_actions = max_actions
         self._log_handle: TextIO | None = None
+        if self.max_actions is not None and self.max_actions <= 0:
+            raise ValueError("max_actions must be greater than 0.")
         if log_file is not None:
             log_file.parent.mkdir(parents=True, exist_ok=True)
             self._log_handle = log_file.open("a", encoding="utf-8")
 
     def click(self, action: ClickAction) -> ActionResult:
+        if self.max_actions is not None and self.action_count >= self.max_actions:
+            self._emit(f"Max actions reached ({self.max_actions}), skipping dry-run click.")
+            return ActionResult("dry_run_click", "skipped_max_actions_reached", action.reason)
         self.action_count += 1
         self._emit(
             "DRY RUN click "
@@ -62,6 +70,9 @@ class DryRunBackend:
         return ActionResult("dry_run_click", "executed", action.reason)
 
     def tap(self, action: TapAction) -> ActionResult:
+        if self.max_actions is not None and self.action_count >= self.max_actions:
+            self._emit(f"Max actions reached ({self.max_actions}), skipping dry-run tap.")
+            return ActionResult("dry_run_click", "skipped_max_actions_reached", action.reason)
         self.action_count += 1
         self._emit(
             "DRY RUN tap "
@@ -73,6 +84,9 @@ class DryRunBackend:
     def wait(self, seconds: float, reason: str = "") -> ActionResult:
         self._emit(f"DRY RUN wait seconds={seconds:.2f} reason={reason}")
         return ActionResult("wait", "skipped_wait", reason)
+
+    def reset_cycle(self) -> None:
+        self.action_count = 0
 
     def close(self) -> None:
         if self._log_handle is not None:
@@ -196,6 +210,10 @@ class AdbActionBackend:
     def wait(self, seconds: float, reason: str = "") -> ActionResult:
         self._emit(f"ADB wait seconds={seconds:.2f} reason={reason}")
         return ActionResult("wait", "skipped_wait", reason)
+
+    def reset_cycle(self) -> None:
+        self.action_count = 0
+        self.last_click_at = 0.0
 
     def close(self) -> None:
         if self._log_handle is not None:

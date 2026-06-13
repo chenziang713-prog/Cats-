@@ -241,6 +241,32 @@ seconds, `click_watch_ad_button` waits 15 seconds, and `close_ad` /
 `post_action_delay`, while `click_records.csv` includes the delay seconds,
 start/end timestamps, and whether a stop file interrupted the delay.
 
+By default, a completed reward flow stops after `confirm_reward` succeeds and
+`summary.txt` records `stop_reason=reward_flow_completed`. To keep farming on a
+timer, add `--repeat-after-reward`. After each successful `confirm_reward`, the
+runner writes `cycle_completed`, waits `--cycle-wait-seconds` seconds
+(default `1800`), then starts the next cycle without creating a new `run_id`.
+During this cycle wait it does not capture, detect, click, or consume
+`--max-actions`; it checks the stop file every 0.5 seconds. Use `--max-cycles 2`
+to stop after two completed cycles, or leave `--max-cycles 0` for unlimited
+cycles.
+
+Example repeat run:
+
+```powershell
+python -m cats_automatic.main `
+  --game cats `
+  --strategy ad_reward `
+  --capture-backend adb `
+  --adb-path "C:\Program Files\ASUS\GlideX\adb.exe" `
+  --adb-serial emulator-5556 `
+  --allow-click `
+  --repeat-after-reward `
+  --cycle-wait-seconds 1800 `
+  --max-cycles 0 `
+  --stop-file output\STOP
+```
+
 Use the window capture backend for an emulator window:
 
 ```powershell
@@ -372,15 +398,17 @@ python -m cats_automatic.main `
 
 Safety defaults:
 
-- Real clicks are not implemented in this build.
-- Strategy mode uses dry-run actions only.
+- Real clicks are guarded and only available in strategy mode with
+  `--allow-click --capture-backend adb`.
+- Strategy mode defaults to dry-run actions.
 - The current `ad_reward` strategy formalizes `ad_entry` detection plus the
   film page `page_marker -> watch_ad_button` dry-run action plus ad close
   buttons plus reward confirmation. Other reward flows are intentionally left
   for later small features.
 - `--capture-backend replay` reads local screenshots only; it does not capture
   the desktop or control windows.
-- `--max-actions 1` allows only one click by default.
+- In strategy mode, `--max-actions` is a per-cycle safety limit and defaults to
+  8 clicks.
 - `--repeat-actions` defaults to 1 and must fit within `--max-actions`.
 - `--click-cooldown` prevents rapid repeated clicks.
 - If `stop.flag` exists in the project root, actions are skipped.

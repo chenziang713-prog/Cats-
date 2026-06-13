@@ -869,6 +869,162 @@ def test_strategy_runner_detects_stop_file_during_post_action_delay(tmp_path: Pa
     assert "stop_reason: stop_file" in recorder.summary_path.read_text(encoding="utf-8")
 
 
+def test_strategy_runner_stops_after_reward_without_repeat(tmp_path: Path) -> None:
+    screen = tmp_path / "screen.png"
+    screen.write_text("fake", encoding="utf-8")
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    (templates / "target.png").touch()
+    recorder = RunRecorder(
+        output_root=tmp_path / "runs",
+        capture_backend="fake",
+        run_id="single-cycle",
+    )
+    capture_backend = FakeCaptureBackend(screen)
+    runner = StrategyRunner(
+        game=GameDefinition("test", tmp_path / "config.json", templates),
+        strategy=ConfirmRewardStrategy(),
+        capture_backend=capture_backend,
+        action_backend=DryRunBackend(max_actions=8),
+        root=tmp_path,
+        output_dir=tmp_path / "output",
+        max_loops=10,
+        run_recorder=recorder,
+        matcher=lambda *_, **__: MatchResult(0.95, (10, 20), (30, 40)),
+        sleep=lambda _: None,
+    )
+
+    runner.run()
+
+    summary = recorder.summary_path.read_text(encoding="utf-8")
+    records = _read_click_records(recorder.click_records_path)
+    assert len(records) == 1
+    assert records[0]["cycle_index"] == "1"
+    assert records[0]["decision"] == "confirm_reward"
+    assert "total_cycles_completed: 1" in summary
+    assert "stop_reason: reward_flow_completed" in summary
+
+
+def test_strategy_runner_repeat_after_reward_waits_and_starts_next_cycle(tmp_path: Path) -> None:
+    screen = tmp_path / "screen.png"
+    screen.write_text("fake", encoding="utf-8")
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    (templates / "target.png").touch()
+    sleeps: list[float] = []
+    recorder = RunRecorder(
+        output_root=tmp_path / "runs",
+        capture_backend="fake",
+        repeat_after_reward=True,
+        cycle_wait_seconds=1.0,
+        max_cycles=2,
+        run_id="repeat-cycle",
+    )
+    runner = StrategyRunner(
+        game=GameDefinition("test", tmp_path / "config.json", templates),
+        strategy=ConfirmRewardStrategy(),
+        capture_backend=FakeCaptureBackend(screen),
+        action_backend=DryRunBackend(max_actions=1),
+        root=tmp_path,
+        output_dir=tmp_path / "output",
+        max_loops=1,
+        run_recorder=recorder,
+        repeat_after_reward=True,
+        cycle_wait_seconds=1.0,
+        max_cycles=2,
+        matcher=lambda *_, **__: MatchResult(0.95, (10, 20), (30, 40)),
+        sleep=lambda seconds: sleeps.append(seconds),
+    )
+
+    runner.run()
+
+    records = _read_click_records(recorder.click_records_path)
+    events = recorder.events_path.read_text(encoding="utf-8")
+    summary = recorder.summary_path.read_text(encoding="utf-8")
+    assert sleeps == [0.5, 0.5]
+    assert [record["cycle_index"] for record in records] == ["1", "2"]
+    assert [record["result"] for record in records] == ["executed", "executed"]
+    assert events.count("cycle_started") == 2
+    assert "cycle_wait_started" in events
+    assert "cycle_wait_finished" in events
+    assert "total_cycles_completed: 2" in summary
+    assert "stop_reason: max_cycles_reached" in summary
+    assert len(list(recorder.screenshots_dir.glob("loop-*.png"))) == 2
+
+
+def test_strategy_runner_cycle_wait_stop_file_stops_without_next_capture(tmp_path: Path) -> None:
+    screen = tmp_path / "screen.png"
+    screen.write_text("fake", encoding="utf-8")
+    stop_file = tmp_path / "STOP"
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    (templates / "target.png").touch()
+    sleeps: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        stop_file.touch()
+
+    recorder = RunRecorder(
+        output_root=tmp_path / "runs",
+        capture_backend="fake",
+        repeat_after_reward=True,
+        cycle_wait_seconds=2.0,
+        run_id="cycle-wait-stop",
+    )
+    runner = StrategyRunner(
+        game=GameDefinition("test", tmp_path / "config.json", templates),
+        strategy=ConfirmRewardStrategy(),
+        capture_backend=FakeCaptureBackend(screen),
+        action_backend=DryRunBackend(max_actions=1),
+        root=tmp_path,
+        output_dir=tmp_path / "output",
+        max_loops=1,
+        run_recorder=recorder,
+        stop_file=stop_file,
+        repeat_after_reward=True,
+        cycle_wait_seconds=2.0,
+        matcher=lambda *_, **__: MatchResult(0.95, (10, 20), (30, 40)),
+        sleep=sleep,
+    )
+
+    runner.run()
+
+    events = recorder.events_path.read_text(encoding="utf-8")
+    summary = recorder.summary_path.read_text(encoding="utf-8")
+    assert sleeps == [0.5]
+    assert "cycle_wait_interrupted_by_stop_file" in events
+    assert "stop_reason: stop_file" in summary
+    assert len(list(recorder.screenshots_dir.glob("loop-*.png"))) == 1
+
+
+def test_strategy_runner_start_cycle_resets_close_streak_and_action_count(tmp_path: Path) -> None:
+    strategy = AdRewardStrategy()
+    for _ in range(3):
+        assert strategy.decide(_context_with_detections({"close_end_2": _detection("close_end_2")})).action_name == "close_ad"
+    assert strategy.decide(
+        _context_with_detections({"close_end_2": _detection("close_end_2")})
+    ) == StrategyDecision.wait(1.0, "wait_close_limit_reached")
+    action_backend = DryRunBackend(max_actions=1)
+    action_backend.click(ClickAction(1, 2, 1.0, "used"))
+    runner = StrategyRunner(
+        game=load_game("cats"),
+        strategy=strategy,
+        capture_backend=FakeCaptureBackend(tmp_path / "unused.png"),
+        action_backend=action_backend,
+        root=Path(__file__).resolve().parents[1],
+        output_dir=tmp_path / "output",
+        max_loops=1,
+    )
+
+    runner._start_cycle(2)
+
+    assert action_backend.action_count == 0
+    assert strategy.decide(
+        _context_with_detections({"close_end_2": _detection("close_end_2")})
+    ) == StrategyDecision.click("close_end_2", "close_ad", "close_ad")
+
+
 def test_strategy_runner_stop_file_writes_summary(tmp_path: Path) -> None:
     stop_file = tmp_path / "STOP"
     stop_file.touch()
@@ -2052,6 +2208,15 @@ class StaticStrategy:
             "click_target",
             post_action_delay_seconds=self.post_action_delay_seconds,
         )
+
+
+class ConfirmRewardStrategy:
+    def targets(self) -> list[TargetSpec]:
+        return [TargetSpec("target", "templates/target.png", 0.5)]
+
+    def decide(self, context: StrategyContext) -> StrategyDecision:
+        assert "target" in context.detections
+        return StrategyDecision.click("target", "confirm_reward")
 
 
 class OutOfBoundsRegionStrategy:
