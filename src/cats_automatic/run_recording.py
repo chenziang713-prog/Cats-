@@ -33,6 +33,10 @@ CLICK_RECORD_FIELDS = [
     "close_streak",
     "result",
     "notes",
+    "post_action_delay_seconds",
+    "delay_started_at",
+    "delay_finished_at",
+    "delay_interrupted_by_stop_file",
 ]
 
 
@@ -75,6 +79,7 @@ class RunRecorder:
         self.last_screenshot = ""
         self.stop_reason = "completed"
         self.last_adb_tap: dict[str, str] = {}
+        self.last_delay: dict[str, str] = {}
         self.finished = False
         self._csv_handle: TextIO | None = None
         self._events_handle: TextIO | None = None
@@ -139,6 +144,10 @@ class RunRecorder:
         max_actions_used: int,
         close_streak: int | None = None,
         notes: str = "",
+        post_action_delay_seconds: float = 0.0,
+        delay_started_at: str = "",
+        delay_finished_at: str = "",
+        delay_interrupted_by_stop_file: bool = False,
     ) -> None:
         decision_name = decision.action_name or decision.kind
         self.last_decision = decision_name
@@ -168,6 +177,12 @@ class RunRecorder:
             "close_streak": "" if close_streak is None else close_streak,
             "result": action_result.result,
             "notes": action_notes,
+            "post_action_delay_seconds": (
+                "" if post_action_delay_seconds <= 0 else f"{post_action_delay_seconds:.3f}"
+            ),
+            "delay_started_at": delay_started_at,
+            "delay_finished_at": delay_finished_at,
+            "delay_interrupted_by_stop_file": str(delay_interrupted_by_stop_file).lower(),
         }
         self._csv_writer.writerow(row)
         assert self._csv_handle is not None
@@ -179,7 +194,42 @@ class RunRecorder:
             self.total_clicks += 1
         if action_result.action_type == "adb_tap" and action_result.result == "executed":
             self.last_adb_tap = {key: str(value) for key, value in row.items()}
+        if post_action_delay_seconds > 0:
+            self.last_delay = {
+                "seconds": f"{post_action_delay_seconds:.3f}",
+                "started_at": delay_started_at,
+                "finished_at": delay_finished_at,
+                "interrupted_by_stop_file": str(delay_interrupted_by_stop_file).lower(),
+                "decision": decision_name,
+            }
         self.event("action", **row)
+
+    def record_delay(
+        self,
+        *,
+        loop_index: int,
+        decision: str,
+        seconds: float,
+        started_at: str,
+        finished_at: str,
+        interrupted_by_stop_file: bool,
+    ) -> None:
+        self.last_delay = {
+            "seconds": f"{seconds:.3f}",
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "interrupted_by_stop_file": str(interrupted_by_stop_file).lower(),
+            "decision": decision,
+        }
+        self.event(
+            "post_action_delay",
+            loop=loop_index,
+            decision=decision,
+            post_action_delay_seconds=f"{seconds:.3f}",
+            delay_started_at=started_at,
+            delay_finished_at=finished_at,
+            delay_interrupted_by_stop_file=interrupted_by_stop_file,
+        )
 
     def event(self, event_type: str, **payload: Any) -> None:
         event = {"timestamp": _timestamp(), "event": event_type, **payload}
@@ -239,6 +289,19 @@ class RunRecorder:
                 )
             ),
             f"last_screenshot: {self.last_screenshot}",
+            "last_delay: "
+            + (
+                "none"
+                if not self.last_delay
+                else (
+                    f"decision={self.last_delay.get('decision')} "
+                    f"seconds={self.last_delay.get('seconds')} "
+                    f"started_at={self.last_delay.get('started_at')} "
+                    f"finished_at={self.last_delay.get('finished_at')} "
+                    "interrupted_by_stop_file="
+                    f"{self.last_delay.get('interrupted_by_stop_file')}"
+                )
+            ),
             f"stop_reason: {self.stop_reason}",
         ]
         self.summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

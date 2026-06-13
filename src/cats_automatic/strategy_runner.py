@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import time
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 
 from .actions import ActionBackend, ActionResult, ClickAction, TapAction
@@ -53,6 +54,7 @@ class StrategyRunner:
         self.stop_file = stop_file
         self.matcher = matcher
         self.sleep = sleep
+        self._stop_requested = False
 
     def run(self) -> int:
         completed = 0
@@ -109,6 +111,9 @@ class StrategyRunner:
             print(f"Decision: {decision.action_name or decision.kind}")
             if self._execute_decision(decision, detections):
                 completed += 1
+            if self._stop_requested:
+                stop_reason = "stop_file"
+                break
             if decision.kind == "stop":
                 stop_reason = decision.reason or "stop"
                 break
@@ -170,12 +175,13 @@ class StrategyRunner:
     ) -> bool:
         if decision.kind == "wait":
             action_result = self.action_backend.wait(decision.wait_seconds, decision.reason)
-            self._record_action(decision, action_result, None)
+            self._record_action(decision, action_result, None, None)
             return True
         if decision.kind == "stop":
             self._record_action(
                 decision,
                 ActionResult("stop", "skipped_stop_file", decision.reason),
+                None,
                 None,
             )
             return False
@@ -185,6 +191,7 @@ class StrategyRunner:
                 decision,
                 ActionResult(decision.kind, "unknown_decision", decision.reason),
                 None,
+                None,
             )
             return False
         if decision.target_name is None or decision.target_name not in detections:
@@ -192,6 +199,7 @@ class StrategyRunner:
             self._record_action(
                 decision,
                 ActionResult(decision.kind, "target_not_detected", decision.reason),
+                None,
                 None,
             )
             return False
@@ -218,14 +226,53 @@ class StrategyRunner:
             )
         if action_result is None:
             action_result = ActionResult("dry_run_click", "executed", reason)
-        self._record_action(decision, action_result, detection)
+        delay_info = None
+        if action_result.result == "executed" and decision.post_action_delay_seconds > 0:
+            delay_info = self._post_action_delay(decision)
+        self._record_action(decision, action_result, detection, delay_info)
         return True
+
+    def _post_action_delay(self, decision: StrategyDecision) -> dict[str, object]:
+        seconds = decision.post_action_delay_seconds
+        reason = decision.reason or decision.action_name or decision.kind
+        started_at = _timestamp()
+        print(f"post_action_delay seconds={seconds:g} reason={reason}")
+        remaining = seconds
+        interrupted = False
+        while remaining > 0:
+            if self.stop_file is not None and self.stop_file.exists():
+                interrupted = True
+                self._stop_requested = True
+                break
+            sleep_seconds = min(0.5, remaining)
+            self.sleep(sleep_seconds)
+            remaining -= sleep_seconds
+        if self.stop_file is not None and self.stop_file.exists():
+            interrupted = True
+            self._stop_requested = True
+        finished_at = _timestamp()
+        if self.run_recorder is not None:
+            self.run_recorder.record_delay(
+                loop_index=self.run_recorder.total_loops,
+                decision=decision.action_name or decision.kind,
+                seconds=seconds,
+                started_at=started_at,
+                finished_at=finished_at,
+                interrupted_by_stop_file=interrupted,
+            )
+        return {
+            "seconds": seconds,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "interrupted_by_stop_file": interrupted,
+        }
 
     def _record_action(
         self,
         decision: StrategyDecision,
         action_result: ActionResult,
         detection: DetectionResult | None,
+        delay_info: dict[str, object] | None,
     ) -> None:
         if self.run_recorder is None:
             return
@@ -246,6 +293,16 @@ class StrategyRunner:
             max_actions_used=self.action_backend.action_count,
             close_streak=getattr(self.strategy, "_consecutive_close_actions", None),
             notes=notes,
+            post_action_delay_seconds=(
+                float(delay_info["seconds"]) if delay_info is not None else 0.0
+            ),
+            delay_started_at=str(delay_info["started_at"]) if delay_info is not None else "",
+            delay_finished_at=str(delay_info["finished_at"]) if delay_info is not None else "",
+            delay_interrupted_by_stop_file=(
+                bool(delay_info["interrupted_by_stop_file"])
+                if delay_info is not None
+                else False
+            ),
         )
 
     def _record_stop(self, loop_index: int, result: str) -> None:
@@ -260,6 +317,10 @@ class StrategyRunner:
             max_actions_used=self.action_backend.action_count,
             close_streak=getattr(self.strategy, "_consecutive_close_actions", None),
         )
+
+
+def _timestamp() -> str:
+    return datetime.now().isoformat(timespec="seconds")
 
 
 def _to_detection_result(

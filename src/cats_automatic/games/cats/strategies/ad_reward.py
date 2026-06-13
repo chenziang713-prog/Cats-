@@ -5,11 +5,18 @@ from collections.abc import Sequence
 from ....strategy_base import RelativeRegion, StrategyContext, StrategyDecision, TargetSpec
 
 
+POST_ACTION_DELAYS = {
+    "click_ad_entry": 5.0,
+    "click_watch_ad_button": 15.0,
+    "close_ad": 1.5,
+    "confirm_reward": 1.5,
+}
+
+
 class Strategy:
     def __init__(self, max_consecutive_close_actions: int = 3) -> None:
         self.max_consecutive_close_actions = max_consecutive_close_actions
         self._consecutive_close_actions = 0
-        self._ad_waiting_after_watch = False
 
     def targets(self) -> Sequence[TargetSpec]:
         return (
@@ -101,9 +108,6 @@ class Strategy:
         )
 
     def decide(self, context: StrategyContext) -> StrategyDecision:
-        if self._ad_waiting_after_watch:
-            return self._decide_while_waiting_after_watch(context)
-
         if "close_end_2" in context.detections:
             return self._close_or_wait("close_end_2")
         if "close_end_1" in context.detections:
@@ -121,45 +125,36 @@ class Strategy:
                 "confirm_button",
                 "confirm_reward",
                 "confirm_reward",
+                post_action_delay_seconds=POST_ACTION_DELAYS["confirm_reward"],
             )
         if "page_marker" not in context.detections:
             if "ad_entry" in context.detections:
-                return StrategyDecision.click("ad_entry", "click_ad_entry", "click_ad_entry")
+                return StrategyDecision.click(
+                    "ad_entry",
+                    "click_ad_entry",
+                    "click_ad_entry",
+                    post_action_delay_seconds=POST_ACTION_DELAYS["click_ad_entry"],
+                )
             return StrategyDecision.wait(1.0, "wait_not_on_target_page")
         if "watch_ad_button" not in context.detections:
             return StrategyDecision.wait(1.0, "wait_no_ad_button")
-        self._ad_waiting_after_watch = True
-        print("entered ad_waiting_after_watch after click_watch_ad_button")
         return StrategyDecision.click(
             "watch_ad_button",
             "click_watch_ad_button",
             "click_watch_ad_button",
+            post_action_delay_seconds=POST_ACTION_DELAYS["click_watch_ad_button"],
         )
-
-    def _decide_while_waiting_after_watch(self, context: StrategyContext) -> StrategyDecision:
-        for target_name in ("close_end_2", "close_end_1", "close_end_3", "close_end_4"):
-            if target_name in context.detections:
-                print("close_ad detected during ad_waiting_after_watch")
-                return self._close_or_wait(target_name)
-
-        self._reset_close_limit()
-        if "reward_confirm_marker" in context.detections and "confirm_button" in context.detections:
-            self._ad_waiting_after_watch = False
-            print("confirm_reward detected, leaving ad_waiting_after_watch")
-            return StrategyDecision.click(
-                "confirm_button",
-                "confirm_reward",
-                "confirm_reward",
-            )
-
-        print("waiting_for_ad_close_or_reward")
-        return StrategyDecision.wait(1.0, "waiting_for_ad_close_or_reward")
 
     def _close_or_wait(self, target_name: str) -> StrategyDecision:
         if self._consecutive_close_actions >= self.max_consecutive_close_actions:
             return StrategyDecision.wait(1.0, "wait_close_limit_reached")
         self._consecutive_close_actions += 1
-        return StrategyDecision.click(target_name, "close_ad", "close_ad")
+        return StrategyDecision.click(
+            target_name,
+            "close_ad",
+            "close_ad",
+            post_action_delay_seconds=POST_ACTION_DELAYS["close_ad"],
+        )
 
     def _reset_close_limit(self) -> None:
         self._consecutive_close_actions = 0

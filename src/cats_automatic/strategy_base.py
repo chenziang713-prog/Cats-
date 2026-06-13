@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .game_base import GameDefinition
@@ -67,14 +67,39 @@ class StrategyDecision:
     action_name: str = ""
     wait_seconds: float = 0.0
     reason: str = ""
+    post_action_delay_seconds: float = field(default=0.0, compare=False)
 
     @classmethod
-    def click(cls, target_name: str, action_name: str, reason: str = "") -> "StrategyDecision":
-        return cls(kind="click", target_name=target_name, action_name=action_name, reason=reason)
+    def click(
+        cls,
+        target_name: str,
+        action_name: str,
+        reason: str = "",
+        post_action_delay_seconds: float = 0.0,
+    ) -> "StrategyDecision":
+        return cls(
+            kind="click",
+            target_name=target_name,
+            action_name=action_name,
+            reason=reason,
+            post_action_delay_seconds=post_action_delay_seconds,
+        )
 
     @classmethod
-    def tap(cls, target_name: str, action_name: str, reason: str = "") -> "StrategyDecision":
-        return cls(kind="tap", target_name=target_name, action_name=action_name, reason=reason)
+    def tap(
+        cls,
+        target_name: str,
+        action_name: str,
+        reason: str = "",
+        post_action_delay_seconds: float = 0.0,
+    ) -> "StrategyDecision":
+        return cls(
+            kind="tap",
+            target_name=target_name,
+            action_name=action_name,
+            reason=reason,
+            post_action_delay_seconds=post_action_delay_seconds,
+        )
 
     @classmethod
     def wait(cls, seconds: float = 1.0, reason: str = "") -> "StrategyDecision":

@@ -153,6 +153,7 @@ def test_ad_reward_strategy_after_watch_click_can_click_ad_entry() -> None:
     decision = strategy.decide(_context_with_detections({"ad_entry": _detection("ad_entry")}))
 
     assert decision == StrategyDecision.click("ad_entry", "click_ad_entry", "click_ad_entry")
+    assert decision.post_action_delay_seconds == 5.0
 
 
 def test_ad_reward_strategy_after_watch_click_can_click_watch_ad_button() -> None:
@@ -172,6 +173,7 @@ def test_ad_reward_strategy_after_watch_click_can_click_watch_ad_button() -> Non
         "click_watch_ad_button",
         "click_watch_ad_button",
     )
+    assert decision.post_action_delay_seconds == 15.0
 
 
 def test_ad_reward_strategy_after_watch_click_prioritizes_close_ad() -> None:
@@ -180,6 +182,7 @@ def test_ad_reward_strategy_after_watch_click_prioritizes_close_ad() -> None:
     decision = strategy.decide(_context_with_detections({"close_end_4": _detection("close_end_4")}))
 
     assert decision == StrategyDecision.click("close_end_4", "close_ad", "close_ad")
+    assert decision.post_action_delay_seconds == 1.5
 
 
 def test_ad_reward_strategy_after_watch_click_confirms_reward() -> None:
@@ -202,11 +205,13 @@ def test_ad_reward_strategy_after_watch_click_confirms_reward() -> None:
         "confirm_reward",
         "confirm_reward",
     )
+    assert confirm_decision.post_action_delay_seconds == 1.5
     assert after_confirm_decision == StrategyDecision.click(
         "ad_entry",
         "click_ad_entry",
         "click_ad_entry",
     )
+    assert after_confirm_decision.post_action_delay_seconds == 5.0
 
 
 def test_ad_reward_strategy_after_watch_click_keeps_close_limit() -> None:
@@ -237,6 +242,7 @@ def test_ad_reward_strategy_confirms_reward_when_marker_and_button_detected() ->
     decision = strategy.decide(context)
 
     assert decision == StrategyDecision.click("confirm_button", "confirm_reward", "confirm_reward")
+    assert decision.post_action_delay_seconds == 1.5
 
 
 def test_ad_reward_strategy_waits_when_reward_confirm_button_missing() -> None:
@@ -298,6 +304,7 @@ def test_ad_reward_strategy_clicks_any_close_template(target_name: str) -> None:
     decision = strategy.decide(context)
 
     assert decision == StrategyDecision.click(target_name, "close_ad", "close_ad")
+    assert decision.post_action_delay_seconds == 1.5
 
 
 def test_ad_reward_strategy_prefers_right_close_over_left_close() -> None:
@@ -571,6 +578,45 @@ def test_strategy_runner_records_dry_run_click(tmp_path: Path) -> None:
     assert (recorder.debug_dir / "loop-001-detections.json").exists()
 
 
+def test_strategy_runner_records_dry_run_post_action_delay(tmp_path: Path) -> None:
+    screen = tmp_path / "screen.png"
+    screen.write_text("fake", encoding="utf-8")
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    (templates / "target.png").touch()
+    sleeps: list[float] = []
+    recorder = RunRecorder(
+        output_root=tmp_path / "runs",
+        capture_backend="fake",
+        run_id="dry-run-delay",
+    )
+    runner = StrategyRunner(
+        game=GameDefinition("test", tmp_path / "config.json", templates),
+        strategy=StaticStrategy(post_action_delay_seconds=1.0),
+        capture_backend=FakeCaptureBackend(screen),
+        action_backend=DryRunBackend(),
+        root=tmp_path,
+        output_dir=tmp_path / "output",
+        max_loops=1,
+        run_recorder=recorder,
+        matcher=lambda *_, **__: MatchResult(0.95, (10, 20), (30, 40)),
+        sleep=lambda seconds: sleeps.append(seconds),
+    )
+
+    runner.run()
+
+    records = _read_click_records(recorder.click_records_path)
+    events = recorder.events_path.read_text(encoding="utf-8")
+    assert sleeps == [0.5, 0.5]
+    assert records[0]["action_type"] == "dry_run_click"
+    assert records[0]["post_action_delay_seconds"] == "1.000"
+    assert records[0]["delay_interrupted_by_stop_file"] == "false"
+    assert "post_action_delay" in events
+    assert "last_delay: decision=click_target seconds=1.000" in recorder.summary_path.read_text(
+        encoding="utf-8"
+    )
+
+
 def test_strategy_runner_records_allow_click_adb_tap(tmp_path: Path) -> None:
     adb = tmp_path / "adb.exe"
     adb.touch()
@@ -625,6 +671,59 @@ def test_strategy_runner_records_allow_click_adb_tap(tmp_path: Path) -> None:
     assert "last_adb_tap: loop=1 decision=click_target x=25 y=40 confidence=0.950" in (
         recorder.summary_path.read_text(encoding="utf-8")
     )
+
+
+def test_strategy_runner_runs_post_action_delay_after_adb_tap(tmp_path: Path) -> None:
+    adb = tmp_path / "adb.exe"
+    adb.touch()
+    screen = tmp_path / "screen.png"
+    screen.write_text("fake", encoding="utf-8")
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    (templates / "target.png").touch()
+    commands: list[list[str]] = []
+    sleeps: list[float] = []
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+    action_backend = AdbActionBackend(
+        adb_path=adb,
+        adb_serial="emulator-5556",
+        max_actions=1,
+        click_cooldown=0,
+        min_click_confidence=0.80,
+        runner=runner,
+    )
+    recorder = RunRecorder(
+        output_root=tmp_path / "runs",
+        capture_backend="adb",
+        adb_serial="emulator-5556",
+        max_actions_limit=1,
+        run_id="adb-delay",
+    )
+    strategy_runner = StrategyRunner(
+        game=GameDefinition("test", tmp_path / "config.json", templates),
+        strategy=StaticStrategy(post_action_delay_seconds=1.0),
+        capture_backend=FakeCaptureBackend(screen, name="adb"),
+        action_backend=action_backend,
+        root=tmp_path,
+        output_dir=tmp_path / "output",
+        max_loops=1,
+        run_recorder=recorder,
+        matcher=lambda *_, **__: MatchResult(0.95, (10, 20), (30, 40)),
+        sleep=lambda seconds: sleeps.append(seconds),
+    )
+
+    strategy_runner.run()
+
+    records = _read_click_records(recorder.click_records_path)
+    assert len(commands) == 1
+    assert sleeps == [0.5, 0.5]
+    assert action_backend.action_count == 1
+    assert records[0]["action_type"] == "adb_tap"
+    assert records[0]["post_action_delay_seconds"] == "1.000"
 
 
 def test_strategy_runner_skips_low_confidence_adb_tap_and_records(tmp_path: Path) -> None:
@@ -727,6 +826,47 @@ def test_strategy_runner_records_max_actions_reached(tmp_path: Path) -> None:
     assert records[0]["result"] == "executed"
     assert records[1]["result"] == "skipped_max_actions_reached"
     assert records[1]["max_actions_used"] == "1"
+
+
+def test_strategy_runner_detects_stop_file_during_post_action_delay(tmp_path: Path) -> None:
+    screen = tmp_path / "screen.png"
+    screen.write_text("fake", encoding="utf-8")
+    stop_file = tmp_path / "STOP"
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    (templates / "target.png").touch()
+    sleeps: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        stop_file.touch()
+
+    recorder = RunRecorder(
+        output_root=tmp_path / "runs",
+        capture_backend="fake",
+        run_id="delay-stop",
+    )
+    runner = StrategyRunner(
+        game=GameDefinition("test", tmp_path / "config.json", templates),
+        strategy=StaticStrategy(post_action_delay_seconds=2.0),
+        capture_backend=FakeCaptureBackend(screen),
+        action_backend=DryRunBackend(),
+        root=tmp_path,
+        output_dir=tmp_path / "output",
+        max_loops=2,
+        run_recorder=recorder,
+        stop_file=stop_file,
+        matcher=lambda *_, **__: MatchResult(0.95, (10, 20), (30, 40)),
+        sleep=sleep,
+    )
+
+    runner.run()
+
+    records = _read_click_records(recorder.click_records_path)
+    assert sleeps == [0.5]
+    assert len(records) == 1
+    assert records[0]["delay_interrupted_by_stop_file"] == "true"
+    assert "stop_reason: stop_file" in recorder.summary_path.read_text(encoding="utf-8")
 
 
 def test_strategy_runner_stop_file_writes_summary(tmp_path: Path) -> None:
@@ -1899,12 +2039,19 @@ def _strategy_after_watch_ad_click() -> AdRewardStrategy:
 
 
 class StaticStrategy:
+    def __init__(self, post_action_delay_seconds: float = 0.0) -> None:
+        self.post_action_delay_seconds = post_action_delay_seconds
+
     def targets(self) -> list[TargetSpec]:
         return [TargetSpec("target", "templates/target.png", 0.5)]
 
     def decide(self, context: StrategyContext) -> StrategyDecision:
         assert "target" in context.detections
-        return StrategyDecision.click("target", "click_target")
+        return StrategyDecision.click(
+            "target",
+            "click_target",
+            post_action_delay_seconds=self.post_action_delay_seconds,
+        )
 
 
 class OutOfBoundsRegionStrategy:

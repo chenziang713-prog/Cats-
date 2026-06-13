@@ -234,6 +234,12 @@ decision, target, confidence, coordinates, and matching screenshot path.
 The same directory also contains `summary.txt`, per-loop screenshots, and
 per-loop detection JSON files. Real ADB taps require confidence greater than or
 equal to `--min-click-confidence`, which defaults to `0.80`.
+After successful click decisions, the strategy pauses before the next screenshot
+to avoid double-clicking during slow page transitions: `click_ad_entry` waits 5
+seconds, `click_watch_ad_button` waits 15 seconds, and `close_ad` /
+`confirm_reward` wait 1.5 seconds. The console and `events.jsonl` print
+`post_action_delay`, while `click_records.csv` includes the delay seconds,
+start/end timestamps, and whether a stop file interrupted the delay.
 
 Use the window capture backend for an emulator window:
 
