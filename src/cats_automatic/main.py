@@ -15,6 +15,7 @@ from .config_loader import load_flow
 from .game_loader import GameLoadError, load_game, load_strategy
 from .rules import RuleEngine
 from .runner import run_match_once, run_watch
+from .run_recording import RunRecorder
 from .scenario import load_scenario
 from .strategy_runner import StrategyRunner
 
@@ -106,6 +107,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=1.0,
         help="Minimum seconds between clicks. Defaults to 1.0.",
+    )
+    parser.add_argument(
+        "--min-click-confidence",
+        type=float,
+        default=0.80,
+        help="Minimum confidence required for real ADB taps. Defaults to 0.80.",
     )
     parser.add_argument(
         "--max-actions",
@@ -390,10 +397,21 @@ def run_strategy_mode(args: argparse.Namespace, root: Path) -> None:
     print(f"Loaded game: {game.name}")
     print(f"Loaded strategy: {args.strategy or 'default'}")
     print(f"Capture backend: {capture_backend.name}")
+    max_actions_limit = args.max_actions if args.max_actions is not None else 1
+    recorder = RunRecorder(
+        output_root=root / "output" / "runs",
+        capture_backend=capture_backend.name,
+        adb_serial=args.adb_serial or "",
+        max_actions_limit=max_actions_limit,
+        min_click_confidence=args.min_click_confidence,
+    )
     try:
         action_backend = build_strategy_action_backend(args)
     except (CaptureBackendError, ValueError) as exc:
+        recorder.record_exception(exc)
+        recorder.finish(str(exc))
         raise SystemExit(str(exc)) from exc
+    summary = None
     try:
         runner = StrategyRunner(
             game=game,
@@ -404,10 +422,17 @@ def run_strategy_mode(args: argparse.Namespace, root: Path) -> None:
             output_dir=root / "output" / "strategy",
             max_loops=args.max_loops,
             debug_save_capture=args.debug_save_capture,
+            run_recorder=recorder,
+            stop_file=args.stop_file,
         )
         runner.run()
+    except Exception as exc:
+        recorder.record_exception(exc)
+        raise
     finally:
+        summary = recorder.finish()
         action_backend.close()
+        print_run_record_summary(summary)
 
 
 def build_strategy_action_backend(args: argparse.Namespace) -> ActionBackend:
@@ -428,9 +453,28 @@ def build_strategy_action_backend(args: argparse.Namespace) -> ActionBackend:
         adb_serial=args.adb_serial,
         max_actions=max_actions,
         click_cooldown=args.click_cooldown,
+        min_click_confidence=args.min_click_confidence,
         stop_file=args.stop_file,
         log_file=args.log_file,
     )
+
+
+def print_run_record_summary(summary) -> None:
+    print(f"Run directory: {summary.run_dir}")
+    print(f"Click records: {summary.click_records_path}")
+    last_tap = summary.last_adb_tap
+    if last_tap:
+        print(
+            "Last adb_tap: "
+            f"loop={last_tap.get('loop')} "
+            f"decision={last_tap.get('decision')} "
+            f"x={last_tap.get('click_x')} "
+            f"y={last_tap.get('click_y')} "
+            f"confidence={last_tap.get('confidence')} "
+            f"screenshot_path={last_tap.get('screenshot_path')}"
+        )
+    else:
+        print("Last adb_tap: none")
 
 
 if __name__ == "__main__":

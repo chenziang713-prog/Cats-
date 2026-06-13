@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import csv
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from cats_automatic.game_loader import (
     resolve_template_path,
 )
 from cats_automatic.games.cats.strategies.ad_reward import Strategy as AdRewardStrategy
+from cats_automatic.run_recording import CLICK_RECORD_FIELDS, RunRecorder
 from cats_automatic.strategy_base import (
     DetectionResult,
     RelativeRegion,
@@ -123,7 +125,9 @@ def test_ad_reward_strategy_clicks_watch_ad_button_on_target_page() -> None:
     )
 
 
-def test_ad_reward_strategy_enters_ad_waiting_after_watch(capsys: pytest.CaptureFixture[str]) -> None:
+def test_ad_reward_strategy_does_not_log_state_after_watch_click(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     strategy = AdRewardStrategy()
 
     decision = strategy.decide(
@@ -140,18 +144,18 @@ def test_ad_reward_strategy_enters_ad_waiting_after_watch(capsys: pytest.Capture
         "click_watch_ad_button",
         "click_watch_ad_button",
     )
-    assert "entered ad_waiting_after_watch after click_watch_ad_button" in capsys.readouterr().out
+    assert capsys.readouterr().out == ""
 
 
-def test_ad_reward_strategy_waiting_state_blocks_ad_entry_click() -> None:
+def test_ad_reward_strategy_after_watch_click_can_click_ad_entry() -> None:
     strategy = _strategy_after_watch_ad_click()
 
     decision = strategy.decide(_context_with_detections({"ad_entry": _detection("ad_entry")}))
 
-    assert decision == StrategyDecision.wait(1.0, "waiting_for_ad_close_or_reward")
+    assert decision == StrategyDecision.click("ad_entry", "click_ad_entry", "click_ad_entry")
 
 
-def test_ad_reward_strategy_waiting_state_blocks_repeated_watch_ad_click() -> None:
+def test_ad_reward_strategy_after_watch_click_can_click_watch_ad_button() -> None:
     strategy = _strategy_after_watch_ad_click()
 
     decision = strategy.decide(
@@ -163,10 +167,14 @@ def test_ad_reward_strategy_waiting_state_blocks_repeated_watch_ad_click() -> No
         )
     )
 
-    assert decision == StrategyDecision.wait(1.0, "waiting_for_ad_close_or_reward")
+    assert decision == StrategyDecision.click(
+        "watch_ad_button",
+        "click_watch_ad_button",
+        "click_watch_ad_button",
+    )
 
 
-def test_ad_reward_strategy_waiting_state_allows_close_ad() -> None:
+def test_ad_reward_strategy_after_watch_click_prioritizes_close_ad() -> None:
     strategy = _strategy_after_watch_ad_click()
 
     decision = strategy.decide(_context_with_detections({"close_end_4": _detection("close_end_4")}))
@@ -174,7 +182,7 @@ def test_ad_reward_strategy_waiting_state_allows_close_ad() -> None:
     assert decision == StrategyDecision.click("close_end_4", "close_ad", "close_ad")
 
 
-def test_ad_reward_strategy_waiting_state_confirms_reward_and_leaves() -> None:
+def test_ad_reward_strategy_after_watch_click_confirms_reward() -> None:
     strategy = _strategy_after_watch_ad_click()
 
     confirm_decision = strategy.decide(
@@ -201,28 +209,7 @@ def test_ad_reward_strategy_waiting_state_confirms_reward_and_leaves() -> None:
     )
 
 
-def test_ad_reward_strategy_waiting_state_logs_wait_and_confirm(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    strategy = _strategy_after_watch_ad_click()
-
-    strategy.decide(_context_with_detections({"ad_entry": _detection("ad_entry")}))
-    wait_output = capsys.readouterr().out
-    strategy.decide(
-        _context_with_detections(
-            {
-                "reward_confirm_marker": _detection("reward_confirm_marker"),
-                "confirm_button": _detection("confirm_button"),
-            }
-        )
-    )
-    confirm_output = capsys.readouterr().out
-
-    assert "waiting_for_ad_close_or_reward" in wait_output
-    assert "confirm_reward detected, leaving ad_waiting_after_watch" in confirm_output
-
-
-def test_ad_reward_strategy_waiting_state_keeps_close_limit() -> None:
+def test_ad_reward_strategy_after_watch_click_keeps_close_limit() -> None:
     strategy = _strategy_after_watch_ad_click()
 
     decisions = [
@@ -532,6 +519,246 @@ def test_strategy_runner_executes_finite_dry_run_loop(tmp_path: Path) -> None:
 
     assert completed == 2
     assert [action.x for action in action_backend.clicks] == [25, 25]
+
+
+def test_run_recorder_creates_click_records_csv(tmp_path: Path) -> None:
+    recorder = RunRecorder(
+        output_root=tmp_path / "runs",
+        capture_backend="fake",
+        run_id="test-run",
+    )
+
+    summary = recorder.finish()
+
+    assert summary.click_records_path.exists()
+    assert summary.click_records_path.read_text(encoding="utf-8").splitlines()[0] == ",".join(
+        CLICK_RECORD_FIELDS
+    )
+
+
+def test_strategy_runner_records_dry_run_click(tmp_path: Path) -> None:
+    screen = tmp_path / "screen.png"
+    screen.write_text("fake", encoding="utf-8")
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    (templates / "target.png").touch()
+    recorder = RunRecorder(
+        output_root=tmp_path / "runs",
+        capture_backend="fake",
+        min_click_confidence=0.80,
+        run_id="dry-run",
+    )
+    runner = StrategyRunner(
+        game=GameDefinition("test", tmp_path / "config.json", templates),
+        strategy=StaticStrategy(),
+        capture_backend=FakeCaptureBackend(screen),
+        action_backend=DryRunBackend(),
+        root=tmp_path,
+        output_dir=tmp_path / "output",
+        max_loops=1,
+        run_recorder=recorder,
+        matcher=lambda *_, **__: MatchResult(0.75, (10, 20), (30, 40)),
+        sleep=lambda _: None,
+    )
+
+    runner.run()
+
+    records = _read_click_records(recorder.click_records_path)
+    assert records[0]["action_type"] == "dry_run_click"
+    assert records[0]["result"] == "executed"
+    assert records[0]["notes"] == "below_min_click_confidence=0.800"
+    assert Path(records[0]["screenshot_path"]).name == "loop-001.png"
+    assert (recorder.debug_dir / "loop-001-detections.json").exists()
+
+
+def test_strategy_runner_records_allow_click_adb_tap(tmp_path: Path) -> None:
+    adb = tmp_path / "adb.exe"
+    adb.touch()
+    screen = tmp_path / "screen.png"
+    screen.write_text("fake", encoding="utf-8")
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    (templates / "target.png").touch()
+    commands: list[list[str]] = []
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+    action_backend = AdbActionBackend(
+        adb_path=adb,
+        adb_serial="emulator-5556",
+        max_actions=1,
+        click_cooldown=0,
+        min_click_confidence=0.80,
+        runner=runner,
+    )
+    recorder = RunRecorder(
+        output_root=tmp_path / "runs",
+        capture_backend="adb",
+        adb_serial="emulator-5556",
+        max_actions_limit=1,
+        run_id="adb-run",
+    )
+    strategy_runner = StrategyRunner(
+        game=GameDefinition("test", tmp_path / "config.json", templates),
+        strategy=StaticStrategy(),
+        capture_backend=FakeCaptureBackend(screen, name="adb"),
+        action_backend=action_backend,
+        root=tmp_path,
+        output_dir=tmp_path / "output",
+        max_loops=1,
+        run_recorder=recorder,
+        matcher=lambda *_, **__: MatchResult(0.95, (10, 20), (30, 40)),
+        sleep=lambda _: None,
+    )
+
+    strategy_runner.run()
+
+    records = _read_click_records(recorder.click_records_path)
+    assert commands == [
+        [str(adb), "-s", "emulator-5556", "shell", "input", "tap", "25", "40"]
+    ]
+    assert records[0]["action_type"] == "adb_tap"
+    assert records[0]["result"] == "executed"
+    assert records[0]["adb_serial"] == "emulator-5556"
+    assert "last_adb_tap: loop=1 decision=click_target x=25 y=40 confidence=0.950" in (
+        recorder.summary_path.read_text(encoding="utf-8")
+    )
+
+
+def test_strategy_runner_skips_low_confidence_adb_tap_and_records(tmp_path: Path) -> None:
+    adb = tmp_path / "adb.exe"
+    adb.touch()
+    screen = tmp_path / "screen.png"
+    screen.write_text("fake", encoding="utf-8")
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    (templates / "target.png").touch()
+    commands: list[list[str]] = []
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+    action_backend = AdbActionBackend(
+        adb_path=adb,
+        adb_serial="emulator-5556",
+        max_actions=1,
+        click_cooldown=0,
+        min_click_confidence=0.80,
+        runner=runner,
+    )
+    recorder = RunRecorder(
+        output_root=tmp_path / "runs",
+        capture_backend="adb",
+        adb_serial="emulator-5556",
+        run_id="low-confidence",
+    )
+    strategy_runner = StrategyRunner(
+        game=GameDefinition("test", tmp_path / "config.json", templates),
+        strategy=StaticStrategy(),
+        capture_backend=FakeCaptureBackend(screen, name="adb"),
+        action_backend=action_backend,
+        root=tmp_path,
+        output_dir=tmp_path / "output",
+        max_loops=1,
+        run_recorder=recorder,
+        matcher=lambda *_, **__: MatchResult(0.656, (10, 20), (30, 40)),
+        sleep=lambda _: None,
+    )
+
+    strategy_runner.run()
+
+    records = _read_click_records(recorder.click_records_path)
+    assert commands == []
+    assert action_backend.action_count == 0
+    assert records[0]["action_type"] == "adb_tap"
+    assert records[0]["result"] == "skipped_confidence_too_low"
+    assert records[0]["reason"] == "click_confidence_too_low"
+
+
+def test_strategy_runner_records_max_actions_reached(tmp_path: Path) -> None:
+    adb = tmp_path / "adb.exe"
+    adb.touch()
+    screen = tmp_path / "screen.png"
+    screen.write_text("fake", encoding="utf-8")
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    (templates / "target.png").touch()
+    commands: list[list[str]] = []
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+    action_backend = AdbActionBackend(
+        adb_path=adb,
+        adb_serial="emulator-5556",
+        max_actions=1,
+        click_cooldown=0,
+        min_click_confidence=0.80,
+        runner=runner,
+    )
+    recorder = RunRecorder(
+        output_root=tmp_path / "runs",
+        capture_backend="adb",
+        adb_serial="emulator-5556",
+        max_actions_limit=1,
+        run_id="max-actions",
+    )
+    strategy_runner = StrategyRunner(
+        game=GameDefinition("test", tmp_path / "config.json", templates),
+        strategy=StaticStrategy(),
+        capture_backend=FakeCaptureBackend(screen, name="adb"),
+        action_backend=action_backend,
+        root=tmp_path,
+        output_dir=tmp_path / "output",
+        max_loops=2,
+        run_recorder=recorder,
+        matcher=lambda *_, **__: MatchResult(0.95, (10, 20), (30, 40)),
+        sleep=lambda _: None,
+    )
+
+    strategy_runner.run()
+
+    records = _read_click_records(recorder.click_records_path)
+    assert len(commands) == 1
+    assert records[0]["result"] == "executed"
+    assert records[1]["result"] == "skipped_max_actions_reached"
+    assert records[1]["max_actions_used"] == "1"
+
+
+def test_strategy_runner_stop_file_writes_summary(tmp_path: Path) -> None:
+    stop_file = tmp_path / "STOP"
+    stop_file.touch()
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    recorder = RunRecorder(
+        output_root=tmp_path / "runs",
+        capture_backend="fake",
+        run_id="stop-run",
+    )
+    runner = StrategyRunner(
+        game=GameDefinition("test", tmp_path / "config.json", templates),
+        strategy=StaticStrategy(),
+        capture_backend=FakeCaptureBackend(tmp_path / "unused.png"),
+        action_backend=DryRunBackend(),
+        root=tmp_path,
+        output_dir=tmp_path / "output",
+        max_loops=1,
+        run_recorder=recorder,
+        stop_file=stop_file,
+        matcher=lambda *_, **__: MatchResult(0.95, (10, 20), (30, 40)),
+        sleep=lambda _: None,
+    )
+
+    runner.run()
+
+    assert "stop_reason: stop_file" in recorder.summary_path.read_text(encoding="utf-8")
+    records = _read_click_records(recorder.click_records_path)
+    assert records[0]["action_type"] == "stop"
+    assert records[0]["result"] == "skipped_stop_file"
 
 
 def test_strategy_mode_screen_uses_static_capture_backend(tmp_path: Path) -> None:
@@ -941,7 +1168,7 @@ def test_adb_action_backend_wait_does_not_consume_max_actions(tmp_path: Path) ->
         runner=runner,
     )
 
-    backend.wait(1.0, "waiting_for_ad_close_or_reward")
+    backend.wait(1.0, "wait_no_ad_button")
     backend.click(ClickAction(123, 456, 0.9, "after_wait"))
 
     assert commands == [
@@ -1723,3 +1950,8 @@ class RecordingActionBackend:
 
     def wait(self, seconds: float, reason: str = "") -> None:
         self.waits.append((seconds, reason))
+
+
+def _read_click_records(path: Path) -> list[dict[str, str]]:
+    with path.open(newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))

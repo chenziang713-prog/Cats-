@@ -26,14 +26,22 @@ class TapAction:
     reason: str
 
 
+@dataclass(frozen=True)
+class ActionResult:
+    action_type: str
+    result: str
+    reason: str = ""
+    notes: str = ""
+
+
 class ActionBackend(Protocol):
     action_count: int
 
-    def click(self, action: ClickAction) -> None: ...
+    def click(self, action: ClickAction) -> ActionResult: ...
 
-    def tap(self, action: TapAction) -> None: ...
+    def tap(self, action: TapAction) -> ActionResult: ...
 
-    def wait(self, seconds: float, reason: str = "") -> None: ...
+    def wait(self, seconds: float, reason: str = "") -> ActionResult: ...
 
 
 class DryRunBackend:
@@ -44,24 +52,27 @@ class DryRunBackend:
             log_file.parent.mkdir(parents=True, exist_ok=True)
             self._log_handle = log_file.open("a", encoding="utf-8")
 
-    def click(self, action: ClickAction) -> None:
+    def click(self, action: ClickAction) -> ActionResult:
         self.action_count += 1
         self._emit(
             "DRY RUN click "
             f"x={action.x} y={action.y} confidence={action.confidence:.3f} "
             f"reason={action.reason}"
         )
+        return ActionResult("dry_run_click", "executed", action.reason)
 
-    def tap(self, action: TapAction) -> None:
+    def tap(self, action: TapAction) -> ActionResult:
         self.action_count += 1
         self._emit(
             "DRY RUN tap "
             f"x={action.x} y={action.y} confidence={action.confidence:.3f} "
             f"reason={action.reason}"
         )
+        return ActionResult("dry_run_click", "executed", action.reason)
 
-    def wait(self, seconds: float, reason: str = "") -> None:
+    def wait(self, seconds: float, reason: str = "") -> ActionResult:
         self._emit(f"DRY RUN wait seconds={seconds:.2f} reason={reason}")
+        return ActionResult("wait", "skipped_wait", reason)
 
     def close(self) -> None:
         if self._log_handle is not None:
@@ -87,6 +98,7 @@ class AdbActionBackend:
         adb_serial: str,
         max_actions: int = 1,
         click_cooldown: float = 1.0,
+        min_click_confidence: float = 0.80,
         stop_file: Path | None = None,
         log_file: Path | None = None,
         runner: SubprocessRun = subprocess.run,
@@ -96,6 +108,7 @@ class AdbActionBackend:
         self.adb_serial = adb_serial
         self.max_actions = max_actions
         self.click_cooldown = click_cooldown
+        self.min_click_confidence = min_click_confidence
         self.stop_file = stop_file
         self.runner = runner
         self.sleep = sleep
@@ -107,6 +120,8 @@ class AdbActionBackend:
             raise ValueError("max_actions must be greater than 0.")
         if self.click_cooldown < 0:
             raise ValueError("click_cooldown must not be negative.")
+        if not 0 <= self.min_click_confidence <= 1:
+            raise ValueError("min_click_confidence must be between 0 and 1.")
         if not self.adb_path.exists():
             raise ValueError(f"ADB executable does not exist: {self.adb_path}")
         if not self.adb_path.is_file():
@@ -117,13 +132,24 @@ class AdbActionBackend:
             log_file.parent.mkdir(parents=True, exist_ok=True)
             self._log_handle = log_file.open("a", encoding="utf-8")
 
-    def click(self, action: ClickAction) -> None:
+    def click(self, action: ClickAction) -> ActionResult:
         if self.stop_file is not None and self.stop_file.exists():
             self._emit(f"STOP file present, skipping ADB tap: {self.stop_file}")
-            return
+            return ActionResult("adb_tap", "skipped_stop_file", action.reason)
+        if action.confidence < self.min_click_confidence:
+            self._emit(
+                "Confidence too low for ADB tap "
+                f"confidence={action.confidence:.3f} min={self.min_click_confidence:.3f}"
+            )
+            return ActionResult(
+                "adb_tap",
+                "skipped_confidence_too_low",
+                "click_confidence_too_low",
+                f"original_reason={action.reason}",
+            )
         if self.action_count >= self.max_actions:
             self._emit(f"Max actions reached ({self.max_actions}), skipping ADB tap.")
-            return
+            return ActionResult("adb_tap", "skipped_max_actions_reached", action.reason)
 
         now = time.monotonic()
         elapsed = now - self.last_click_at
@@ -146,7 +172,7 @@ class AdbActionBackend:
         result = self._run(command)
         if result.returncode != 0:
             self._emit(f"ADB tap failed: {_decode_output(result.stderr) or result.returncode}")
-            return
+            return ActionResult("adb_tap", "adb_tap_failed", action.reason)
 
         self.action_count += 1
         self.last_click_at = now
@@ -155,9 +181,10 @@ class AdbActionBackend:
             f"x={action.x} y={action.y} confidence={action.confidence:.3f} "
             f"reason={action.reason}"
         )
+        return ActionResult("adb_tap", "executed", action.reason)
 
-    def tap(self, action: TapAction) -> None:
-        self.click(
+    def tap(self, action: TapAction) -> ActionResult:
+        return self.click(
             ClickAction(
                 x=action.x,
                 y=action.y,
@@ -166,8 +193,9 @@ class AdbActionBackend:
             )
         )
 
-    def wait(self, seconds: float, reason: str = "") -> None:
+    def wait(self, seconds: float, reason: str = "") -> ActionResult:
         self._emit(f"ADB wait seconds={seconds:.2f} reason={reason}")
+        return ActionResult("wait", "skipped_wait", reason)
 
     def close(self) -> None:
         if self._log_handle is not None:

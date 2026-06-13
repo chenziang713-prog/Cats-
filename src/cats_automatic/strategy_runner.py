@@ -5,10 +5,11 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from .actions import ActionBackend, ClickAction, TapAction
+from .actions import ActionBackend, ActionResult, ClickAction, TapAction
 from .backends import CaptureBackend, CaptureBackendError
 from .game_base import GameDefinition
 from .game_loader import resolve_template_path
+from .run_recording import RunRecorder
 from .strategy_base import (
     DetectionResult,
     StrategyContext,
@@ -33,6 +34,8 @@ class StrategyRunner:
         output_dir: Path,
         max_loops: int,
         debug_save_capture: Path | None = None,
+        run_recorder: RunRecorder | None = None,
+        stop_file: Path | None = None,
         matcher: Matcher = match_template,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -46,24 +49,48 @@ class StrategyRunner:
         self.output_dir = output_dir
         self.max_loops = max_loops
         self.debug_save_capture = debug_save_capture
+        self.run_recorder = run_recorder
+        self.stop_file = stop_file
         self.matcher = matcher
         self.sleep = sleep
 
     def run(self) -> int:
         completed = 0
+        stop_reason = "completed"
         for loop_index in range(1, self.max_loops + 1):
+            if self.stop_file is not None and self.stop_file.exists():
+                stop_reason = "stop_file"
+                self._record_stop(loop_index, "skipped_stop_file")
+                break
             print(f"[loop {loop_index}]")
-            screen_path = self.output_dir / f"strategy-loop-{loop_index}.png"
+            screen_path = (
+                self.run_recorder.screenshot_path(loop_index)
+                if self.run_recorder is not None
+                else self.output_dir / f"strategy-loop-{loop_index}.png"
+            )
             try:
                 frame = self.capture_backend.capture(screen_path)
             except CaptureBackendError as exc:
                 print(f"Capture error: {exc}")
+                stop_reason = f"capture_error: {exc}"
+                if self.run_recorder is not None:
+                    self.run_recorder.event("capture_error", loop=loop_index, error=str(exc))
                 break
             print(f"Capture image size: width={frame.size[0]}, height={frame.size[1]}")
+            if self.run_recorder is not None:
+                frame_path = self.run_recorder.record_loop_capture(loop_index, frame.path)
+                frame = type(frame)(
+                    path=frame_path,
+                    title=frame.title,
+                    client_origin=frame.client_origin,
+                    size=frame.size,
+                )
             if self.debug_save_capture is not None:
                 self._save_debug_capture(frame.path, loop_index)
 
             detections = self._detect_targets(frame.path, frame.size)
+            if self.run_recorder is not None:
+                self.run_recorder.record_detections(loop_index, detections)
             for detection in detections.values():
                 print(
                     f"Detected: {detection.name}\n"
@@ -83,9 +110,12 @@ class StrategyRunner:
             if self._execute_decision(decision, detections):
                 completed += 1
             if decision.kind == "stop":
+                stop_reason = decision.reason or "stop"
                 break
             if decision.kind == "wait" and decision.wait_seconds > 0:
                 self.sleep(decision.wait_seconds)
+        if self.run_recorder is not None:
+            self.run_recorder.finish(stop_reason)
         return completed
 
     def _detect_targets(
@@ -139,20 +169,37 @@ class StrategyRunner:
         detections: dict[str, DetectionResult],
     ) -> bool:
         if decision.kind == "wait":
-            self.action_backend.wait(decision.wait_seconds, decision.reason)
+            action_result = self.action_backend.wait(decision.wait_seconds, decision.reason)
+            self._record_action(decision, action_result, None)
             return True
         if decision.kind == "stop":
+            self._record_action(
+                decision,
+                ActionResult("stop", "skipped_stop_file", decision.reason),
+                None,
+            )
             return False
         if decision.kind not in {"click", "tap"}:
             print(f"Unknown decision kind: {decision.kind}")
+            self._record_action(
+                decision,
+                ActionResult(decision.kind, "unknown_decision", decision.reason),
+                None,
+            )
             return False
         if decision.target_name is None or decision.target_name not in detections:
             print(f"Decision target not detected: {decision.target_name}")
+            self._record_action(
+                decision,
+                ActionResult(decision.kind, "target_not_detected", decision.reason),
+                None,
+            )
             return False
         detection = detections[decision.target_name]
         reason = decision.reason or decision.action_name or detection.name
+        action_result: ActionResult | None = None
         if decision.kind == "click":
-            self.action_backend.click(
+            action_result = self.action_backend.click(
                 ClickAction(
                     x=detection.center[0],
                     y=detection.center[1],
@@ -161,7 +208,7 @@ class StrategyRunner:
                 )
             )
         else:
-            self.action_backend.tap(
+            action_result = self.action_backend.tap(
                 TapAction(
                     x=detection.center[0],
                     y=detection.center[1],
@@ -169,7 +216,50 @@ class StrategyRunner:
                     reason=reason,
                 )
             )
+        if action_result is None:
+            action_result = ActionResult("dry_run_click", "executed", reason)
+        self._record_action(decision, action_result, detection)
         return True
+
+    def _record_action(
+        self,
+        decision: StrategyDecision,
+        action_result: ActionResult,
+        detection: DetectionResult | None,
+    ) -> None:
+        if self.run_recorder is None:
+            return
+        notes = ""
+        if (
+            detection is not None
+            and action_result.action_type == "dry_run_click"
+            and detection.confidence < self.run_recorder.min_click_confidence
+        ):
+            notes = (
+                f"below_min_click_confidence={self.run_recorder.min_click_confidence:.3f}"
+            )
+        self.run_recorder.record_action(
+            loop_index=self.run_recorder.total_loops,
+            decision=decision,
+            action_result=action_result,
+            detection=detection,
+            max_actions_used=self.action_backend.action_count,
+            close_streak=getattr(self.strategy, "_consecutive_close_actions", None),
+            notes=notes,
+        )
+
+    def _record_stop(self, loop_index: int, result: str) -> None:
+        if self.run_recorder is None:
+            return
+        self.run_recorder.total_loops = max(self.run_recorder.total_loops, loop_index - 1)
+        self.run_recorder.record_action(
+            loop_index=loop_index,
+            decision=StrategyDecision.stop("stop_file"),
+            action_result=ActionResult("stop", result, "stop_file"),
+            detection=None,
+            max_actions_used=self.action_backend.action_count,
+            close_streak=getattr(self.strategy, "_consecutive_close_actions", None),
+        )
 
 
 def _to_detection_result(

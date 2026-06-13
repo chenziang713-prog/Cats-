@@ -139,12 +139,9 @@ than screenshots, it reuses the last screenshot and prints a clear replay log.
 The expected decisions are `click_ad_entry`, `click_watch_ad_button`,
 `close_ad`, and `confirm_reward`.
 
-After `click_watch_ad_button`, `ad_reward` enters `ad_waiting_after_watch`.
-While waiting for the ad to finish, it continues capturing at the normal loop
-interval but only allows `close_ad`, `confirm_reward`, or `wait`. It will not
-repeat `click_ad_entry` or `click_watch_ad_button` during this state. When
-`confirm_reward` succeeds, the strategy leaves the waiting state and returns to
-the normal flow.
+After `click_watch_ad_button`, `ad_reward` keeps using the normal strategy flow
+on every loop. It still checks close buttons first, then reward confirmation,
+then the watch-ad button, then the ad entry, and otherwise waits.
 
 Debug a live emulator/window capture without clicking:
 
@@ -228,6 +225,15 @@ python -m cats_automatic.main `
 
 Replay, fullscreen, and window backends reject `--allow-click`. Wait decisions
 and undetected/low-confidence targets never call `adb shell input tap`.
+
+Each strategy run writes a troubleshooting record under
+`output/runs/<run_id>/`. If a real ADB run mis-clicks, stop the run and open
+`click_records.csv` in the newest run directory. The last row with
+`action_type=adb_tap` is the most likely mis-click; it includes the loop,
+decision, target, confidence, coordinates, and matching screenshot path.
+The same directory also contains `summary.txt`, per-loop screenshots, and
+per-loop detection JSON files. Real ADB taps require confidence greater than or
+equal to `--min-click-confidence`, which defaults to `0.80`.
 
 Use the window capture backend for an emulator window:
 
