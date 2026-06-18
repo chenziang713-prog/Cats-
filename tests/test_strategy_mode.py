@@ -27,8 +27,10 @@ from cats_automatic.game_loader import (
     load_strategy,
     resolve_template_path,
 )
+from cats_automatic.games.cats.strategies import ad_reward as ad_reward_module
 from cats_automatic.games.cats.strategies.ad_reward import Strategy as AdRewardStrategy
 from cats_automatic.run_recording import CLICK_RECORD_FIELDS, RunRecorder
+from cats_automatic.runtime_paths import close_button_templates_dir, user_templates_dir
 from cats_automatic.strategy_base import (
     DetectionResult,
     RelativeRegion,
@@ -44,6 +46,7 @@ from cats_automatic.main import (
     runtime_root,
 )
 from cats_automatic.strategy_runner import StrategyRunner, resolve_target_region
+from cats_automatic.user_close_templates import load_user_close_targets
 from cats_automatic.vision import MatchResult
 from cats_automatic.window_capture import WindowFrame
 
@@ -54,7 +57,9 @@ def test_game_loader_loads_cats_game() -> None:
     assert game.name == "cats"
 
 
-def test_strategy_loader_loads_named_strategy() -> None:
+def test_strategy_loader_loads_named_strategy(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ad_reward_module, "load_user_close_targets", lambda *_, **__: ())
+
     strategy = load_strategy("cats", "ad_reward")
 
     assert [target.name for target in strategy.targets()] == [
@@ -97,6 +102,96 @@ def test_strategy_loader_loads_named_strategy() -> None:
     assert targets["watch_ad_button"].template == "templates/watch-ad-button.png"
     assert targets["watch_ad_button"].threshold == 0.80
     assert targets["watch_ad_button"].match_mode == "color"
+
+
+def test_user_close_template_dir_is_created_when_missing(tmp_path: Path) -> None:
+    template_dir = tmp_path / "user_templates" / "close_buttons"
+    strategy = AdRewardStrategy(user_close_template_dir=template_dir)
+
+    targets = strategy.targets()
+
+    assert template_dir.exists()
+    assert [target.name for target in targets][:4] == [
+        "close_end_2",
+        "close_end_1",
+        "close_end_3",
+        "close_end_4",
+    ]
+
+
+def test_empty_user_close_template_dir_loads_only_builtin_close_targets(tmp_path: Path) -> None:
+    template_dir = tmp_path / "user_templates" / "close_buttons"
+    targets = AdRewardStrategy(user_close_template_dir=template_dir).targets()
+
+    close_target_names = [target.name for target in targets if target.name.startswith("close_")]
+
+    assert close_target_names == ["close_end_2", "close_end_1", "close_end_3", "close_end_4"]
+
+
+def test_user_close_template_is_loaded_as_close_user_target(tmp_path: Path) -> None:
+    template_dir = tmp_path / "user_templates" / "close_buttons"
+    _write_png(template_dir / "close-user-001.png")
+
+    targets = {target.name: target for target in AdRewardStrategy(user_close_template_dir=template_dir).targets()}
+
+    assert "close_user_001" in targets
+    assert targets["close_user_001"].template == str((template_dir / "close-user-001.png").resolve())
+    assert targets["close_user_001"].threshold == 0.75
+    assert targets["close_user_001"].match_mode == "color"
+    assert targets["close_user_001"].region == RelativeRegion(x=0.0, y=0.0, width=1.0, height=0.20)
+
+
+def test_invalid_user_close_template_is_logged_and_skipped(tmp_path: Path) -> None:
+    template_dir = tmp_path / "user_templates" / "close_buttons"
+    template_dir.mkdir(parents=True)
+    bad_template = template_dir / "close-user-001.png"
+    bad_template.write_text("not an image", encoding="utf-8")
+    messages: list[str] = []
+
+    targets = load_user_close_targets(template_dir, log=messages.append)
+
+    assert targets == ()
+    assert str(bad_template) in messages[0]
+    assert "error=" in messages[0]
+
+
+def test_user_close_template_decision_is_close_ad_with_delay() -> None:
+    strategy = AdRewardStrategy()
+    decision = strategy.decide(_context_with_detections({"close_user_001": _detection("close_user_001")}))
+
+    assert decision == StrategyDecision.click("close_user_001", "close_ad", "close_ad")
+    assert decision.post_action_delay_seconds == 1.5
+
+
+def test_user_close_template_still_uses_close_limit() -> None:
+    strategy = AdRewardStrategy()
+    decisions = [
+        strategy.decide(_context_with_detections({"close_user_001": _detection("close_user_001")}))
+        for _ in range(4)
+    ]
+
+    assert decisions[:3] == [
+        StrategyDecision.click("close_user_001", "close_ad", "close_ad"),
+        StrategyDecision.click("close_user_001", "close_ad", "close_ad"),
+        StrategyDecision.click("close_user_001", "close_ad", "close_ad"),
+    ]
+    assert decisions[3] == StrategyDecision.wait(1.0, "wait_close_limit_reached")
+
+
+def test_runtime_user_templates_dir_uses_base_dir(tmp_path: Path) -> None:
+    assert user_templates_dir(tmp_path) == tmp_path / "user_templates"
+    assert close_button_templates_dir(tmp_path) == tmp_path / "user_templates" / "close_buttons"
+
+
+def test_runtime_user_templates_dir_uses_frozen_exe_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    from cats_automatic.runtime_paths import app_base_dir
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", r"C:\Release\CATSautomatic.exe")
+
+    assert app_base_dir() == Path(r"C:\Release")
+    assert user_templates_dir(create=False) == Path(r"C:\Release\user_templates")
+    assert close_button_templates_dir(create=False) == Path(r"C:\Release\user_templates\close_buttons")
 
 
 def test_strategy_loader_reports_unknown_strategy() -> None:
@@ -308,22 +403,23 @@ def test_ad_reward_strategy_clicks_any_close_template(target_name: str) -> None:
     assert decision.post_action_delay_seconds == 1.5
 
 
-def test_ad_reward_strategy_prefers_right_close_over_left_close() -> None:
+def test_ad_reward_strategy_chooses_highest_confidence_close_template() -> None:
     strategy = AdRewardStrategy()
     context = StrategyContext(
         loop_index=1,
         screen_path=Path("screen.png"),
         game=load_game("cats"),
         detections={
-            "close_end_1": _detection("close_end_1"),
-            "close_end_2": _detection("close_end_2"),
+            "close_end_1": _detection("close_end_1", confidence=0.93),
+            "close_end_2": _detection("close_end_2", confidence=0.80),
+            "close_user_001": _detection("close_user_001", confidence=0.99),
         },
         resolve_template=lambda value: Path(value),
     )
 
     decision = strategy.decide(context)
 
-    assert decision == StrategyDecision.click("close_end_2", "close_ad", "close_ad")
+    assert decision == StrategyDecision.click("close_user_001", "close_ad", "close_ad")
 
 
 def test_ad_reward_strategy_allows_three_consecutive_close_actions() -> None:
@@ -577,6 +673,46 @@ def test_strategy_runner_records_dry_run_click(tmp_path: Path) -> None:
     assert records[0]["notes"] == "below_min_click_confidence=0.800"
     assert Path(records[0]["screenshot_path"]).name == "loop-001.png"
     assert (recorder.debug_dir / "loop-001-detections.json").exists()
+
+
+def test_strategy_runner_records_user_close_template_target_name(tmp_path: Path) -> None:
+    screen = tmp_path / "screen.png"
+    screen.write_text("fake", encoding="utf-8")
+    template_dir = tmp_path / "user_templates" / "close_buttons"
+    user_template = template_dir / "close-user-001.png"
+    _write_png(user_template)
+    recorder = RunRecorder(
+        output_root=tmp_path / "runs",
+        capture_backend="fake",
+        run_id="user-close",
+    )
+
+    def matcher(_screen: Path, template_path: Path, **_: object) -> MatchResult:
+        if template_path == user_template.resolve():
+            return MatchResult(0.95, (10, 20), (30, 40))
+        return MatchResult(0.0, (0, 0), (1, 1))
+
+    runner = StrategyRunner(
+        game=load_game("cats"),
+        strategy=AdRewardStrategy(user_close_template_dir=template_dir),
+        capture_backend=FakeCaptureBackend(screen),
+        action_backend=DryRunBackend(),
+        root=Path(__file__).resolve().parents[1],
+        output_dir=tmp_path / "output",
+        max_loops=1,
+        run_recorder=recorder,
+        matcher=matcher,
+        sleep=lambda _: None,
+    )
+
+    runner.run()
+
+    records = _read_click_records(recorder.click_records_path)
+    debug_json = (recorder.debug_dir / "loop-001-detections.json").read_text(encoding="utf-8")
+    assert records[0]["decision"] == "close_ad"
+    assert records[0]["target_name"] == "close_user_001"
+    assert records[0]["post_action_delay_seconds"] == "1.500"
+    assert "close_user_001" in debug_json
 
 
 def test_strategy_runner_records_dry_run_post_action_delay(tmp_path: Path) -> None:
@@ -1843,7 +1979,7 @@ def test_ad_reward_close_button_detection_passes_regions(tmp_path: Path) -> None
 @pytest.mark.parametrize(
     ("screenshot", "expected_click"),
     [
-        ("Screenshot_20260531-222029.png", (1121, 54)),
+        ("Screenshot_20260531-222029.png", (151, 47)),
         ("Screenshot_20260531-222057.png", (1121, 54)),
         ("Screenshot_20260531-222821.png", (1231, 48)),
     ],
@@ -2166,11 +2302,11 @@ def test_window_backend_selects_exact_hwnd(tmp_path: Path, capsys: pytest.Captur
     assert "hwnd=42" in output
 
 
-def _detection(name: str) -> DetectionResult:
+def _detection(name: str, confidence: float = 0.95) -> DetectionResult:
     return DetectionResult(
         name=name,
         template=Path(f"{name}.png"),
-        confidence=0.95,
+        confidence=confidence,
         center=(100, 200),
         top_left=(90, 190),
         size=(20, 20),
@@ -2187,6 +2323,11 @@ def _context_with_detections(detections: dict[str, DetectionResult]) -> Strategy
         detections=detections,
         resolve_template=lambda value: Path(value),
     )
+
+
+def _write_png(path: Path, color: tuple[int, int, int] = (255, 0, 0)) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (8, 8), color).save(path)
 
 
 def _strategy_after_watch_ad_click() -> AdRewardStrategy:

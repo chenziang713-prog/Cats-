@@ -13,6 +13,30 @@ from typing import Callable
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_DIR = REPO_ROOT / "src"
+if SRC_DIR.exists() and str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from cats_automatic.adb_discovery import (
+    AdbCandidate,
+    discover_adb,
+    parse_adb_devices_output,
+    preferred_device,
+)
+from cats_automatic.external_strategy_loader import (
+    import_strategy_package,
+    list_available_strategies,
+)
+from cats_automatic.runtime_paths import (
+    close_button_templates_dir as runtime_close_button_templates_dir,
+    external_strategies_dir as runtime_external_strategies_dir,
+)
+from cats_automatic.user_close_templates import (
+    add_close_button_template,
+    count_user_close_templates,
+)
+
 
 def is_frozen() -> bool:
     return bool(getattr(sys, "frozen", False))
@@ -150,6 +174,35 @@ def latest_run_dir(runs_dir: Path = OUTPUT_DIR / "runs") -> Path | None:
     return max(candidates, key=lambda path: path.stat().st_mtime)
 
 
+def gui_close_button_templates_dir(base_dir: Path | None = None) -> Path:
+    return runtime_close_button_templates_dir(base_dir or ROOT)
+
+
+def gui_external_strategies_dir(base_dir: Path | None = None) -> Path:
+    return runtime_external_strategies_dir(base_dir or ROOT)
+
+
+def copy_close_button_template(source_path: Path, template_dir: Path | None = None) -> Path:
+    return add_close_button_template(source_path, template_dir or gui_close_button_templates_dir())
+
+
+def gui_strategy_names(base_dir: Path | None = None) -> list[str]:
+    return [
+        info.strategy_name
+        for info in list_available_strategies("cats", base_dir=base_dir or gui_external_strategies_dir())
+        if not info.error
+    ]
+
+
+def update_config_from_adb_candidate(config: GuiConfig, candidate: AdbCandidate) -> GuiConfig:
+    device = preferred_device(candidate.devices)
+    values = asdict(config)
+    values["adb_path"] = str(candidate.adb_path)
+    if device is not None:
+        values["adb_serial"] = device.serial
+    return GuiConfig(**values)
+
+
 def command_to_text(command: list[str]) -> str:
     return subprocess.list2cmdline(command)
 
@@ -167,6 +220,7 @@ class CatsAutomaticGui:
         self.status_var = tk.StringVar(value="就绪  真实点击需勾选 allow-click 并确认")
         self.start_button: ttk.Button | None = None
         self.stop_button: ttk.Button | None = None
+        self.strategy_combobox: ttk.Combobox | None = None
         self._build_ui(load_config())
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self._poll_log_queue()
@@ -212,6 +266,8 @@ class CatsAutomaticGui:
         for column in range(6):
             actions_frame.columnconfigure(column, weight=1)
         buttons: list[tuple[str, Callable[[], None], str | None]] = [
+            ("自动查找 ADB", self.auto_find_adb, None),
+            ("刷新设备列表", self.refresh_devices, None),
             ("检测设备（看设备名的）", self.check_devices, None),
             ("测试截图", self.test_screenshot, None),
             ("打开截图", self.open_gui_screenshot, None),
@@ -222,6 +278,12 @@ class CatsAutomaticGui:
             ("打开最新 run", self.open_latest_run, None),
             ("打开 click_records", self.open_latest_click_records, None),
             ("打开 summary（结果文件）", self.open_latest_summary, None),
+            ("打开关闭按钮模板目录", self.open_close_template_dir, None),
+            ("添加关闭按钮模板", self.add_close_template, None),
+            ("重新扫描模板", self.reload_close_templates, None),
+            ("打开功能目录", self.open_external_strategies_dir, None),
+            ("导入功能包", self.import_external_strategy, None),
+            ("刷新功能列表", self.refresh_strategy_list, None),
             ("保存配置", self.save_current_config, None),
             ("清空日志（清屏）", self.clear_log, None),
         ]
@@ -286,7 +348,11 @@ class CatsAutomaticGui:
         ttk.Label(parent, text=label, anchor="w").grid(row=row, column=0, sticky="w", padx=(0, 8), pady=4)
         var = tk.StringVar(value=value)
         self.config_vars[key] = var
-        ttk.Entry(parent, textvariable=var).grid(row=row, column=1, sticky="ew", pady=4)
+        if key == "strategy":
+            self.strategy_combobox = ttk.Combobox(parent, textvariable=var, values=gui_strategy_names(), state="normal")
+            self.strategy_combobox.grid(row=row, column=1, sticky="ew", pady=4)
+        else:
+            ttk.Entry(parent, textvariable=var).grid(row=row, column=1, sticky="ew", pady=4)
         if browse:
             ttk.Button(parent, text="浏览", command=lambda key=key: self.browse_file(key)).grid(
                 row=row, column=2, padx=(8, 0), pady=4
@@ -335,6 +401,66 @@ class CatsAutomaticGui:
             self.append_log("ERROR: 设备 ID 不能为空")
             return False
         return True
+
+    def auto_find_adb(self) -> None:
+        self.append_log("开始自动查找 ADB...")
+
+        def worker() -> None:
+            result = discover_adb(log=lambda message: self.log_queue.put(message + "\n"))
+            self.root.after(0, lambda: self.apply_adb_discovery_result(result.recommended))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def apply_adb_discovery_result(self, candidate: AdbCandidate | None) -> None:
+        if candidate is None:
+            self.append_log("未找到可用 adb.exe，请手动填写 ADB 路径。")
+            return
+        device = preferred_device(candidate.devices)
+        if device is None:
+            self.append_log("找到 adb.exe，但 adb devices 未发现 device 状态设备。请确认模拟器已打开。")
+            return
+        self._set_string_var("adb_path", str(candidate.adb_path))
+        self._set_string_var("adb_serial", device.serial)
+        save_config(self.current_config())
+        self.append_log("已找到可用 ADB:")
+        self.append_log(f"ADB 路径: {candidate.adb_path}")
+        self.append_log(f"设备 ID: {device.serial}")
+        self.append_log("下一步建议: 点击“测试截图”。")
+
+    def refresh_devices(self) -> None:
+        config = self.current_config()
+        adb_path = Path(config.adb_path)
+        if not adb_path.exists():
+            self.append_log(f"ERROR: ADB 路径不存在: {adb_path}")
+            return
+        command = build_adb_devices_command(config.adb_path)
+        self.append_log(f"刷新设备列表: {command_to_text(command)}")
+
+        def worker() -> None:
+            result = subprocess.run(
+                command,
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+            )
+            output = (result.stdout or "") + "\n" + (result.stderr or "")
+            devices = parse_adb_devices_output(output)
+            self.log_queue.put(output)
+            self.root.after(0, lambda: self.apply_refreshed_devices(devices))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def apply_refreshed_devices(self, devices) -> None:
+        device = preferred_device(devices)
+        if device is None:
+            self.append_log("未发现 device 状态设备；offline/unauthorized 会被忽略。")
+            return
+        self._set_string_var("adb_serial", device.serial)
+        save_config(self.current_config())
+        self.append_log(f"已自动填入设备 ID: {device.serial}")
 
     def check_devices(self) -> None:
         config = self.current_config()
@@ -509,6 +635,83 @@ class CatsAutomaticGui:
 
     def clear_log(self) -> None:
         self.log.delete("1.0", tk.END)
+
+    def open_close_template_dir(self) -> None:
+        template_dir = gui_close_button_templates_dir()
+        template_dir.mkdir(parents=True, exist_ok=True)
+        self.append_log(f"关闭按钮模板目录: {template_dir}")
+        self.open_path(template_dir)
+
+    def add_close_template(self) -> None:
+        selected = filedialog.askopenfilename(
+            title="选择关闭按钮 PNG 模板",
+            filetypes=[("PNG 图片", "*.png"), ("所有文件", "*.*")],
+        )
+        if not selected:
+            return
+        try:
+            destination = copy_close_button_template(Path(selected))
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("添加模板失败", str(exc))
+            self.append_log(f"添加关闭按钮模板失败: {exc}")
+            return
+        self.append_log(f"已添加关闭按钮模板: {destination}")
+        self.append_log("提示: 添加模板后请重新 Dry-run 测试；运行中的任务请重新开始后再加载新模板。")
+
+    def reload_close_templates(self) -> None:
+        template_dir = gui_close_button_templates_dir()
+        count = count_user_close_templates(template_dir)
+        self.append_log(f"已扫描用户关闭按钮模板: {count} 个，目录: {template_dir}")
+        self.append_log("提示: 如果任务已经在运行，请停止后重新开始以确保使用最新模板。")
+
+    def open_external_strategies_dir(self) -> None:
+        strategies_dir = gui_external_strategies_dir()
+        strategies_dir.mkdir(parents=True, exist_ok=True)
+        self.append_log(f"功能目录: {strategies_dir}")
+        self.open_path(strategies_dir)
+
+    def import_external_strategy(self) -> None:
+        messagebox.showinfo("安全提示", "外部 strategy 是 Python 代码，请只导入可信来源的功能包。")
+        selected = filedialog.askopenfilename(
+            title="选择 strategy zip 功能包；如果要导入文件夹，请取消后选择文件夹",
+            filetypes=[("ZIP 功能包", "*.zip"), ("所有文件", "*.*")],
+        )
+        source: Path | None = Path(selected) if selected else None
+        if source is None:
+            folder = filedialog.askdirectory(title="选择 strategy 功能包文件夹")
+            source = Path(folder) if folder else None
+        if source is None:
+            return
+        try:
+            destination = import_strategy_package(source, gui_external_strategies_dir())
+        except FileExistsError as exc:
+            if not messagebox.askyesno("功能包已存在", f"{exc}\n是否覆盖？"):
+                self.append_log("已取消导入功能包。")
+                return
+            destination = import_strategy_package(source, gui_external_strategies_dir(), overwrite=True)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("导入功能包失败", str(exc))
+            self.append_log(f"导入功能包失败: {exc}")
+            return
+        self.append_log(f"已导入功能包: {destination}")
+        self.refresh_strategy_list()
+
+    def refresh_strategy_list(self) -> None:
+        infos = list_available_strategies("cats", base_dir=gui_external_strategies_dir(), log=self.append_log)
+        names = [info.strategy_name for info in infos if not info.error]
+        if self.strategy_combobox is not None:
+            self.strategy_combobox.configure(values=names)
+        self.append_log("已刷新功能列表:")
+        for info in infos:
+            if info.error:
+                self.append_log(f"- {info.strategy_name} 加载失败: {info.error}")
+            else:
+                self.append_log(f"- {info.label}")
+
+    def _set_string_var(self, key: str, value: str) -> None:
+        var = self.config_vars[key]
+        assert isinstance(var, tk.StringVar)
+        var.set(value)
 
     def open_output_dir(self) -> None:
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

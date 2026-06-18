@@ -3,13 +3,21 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from PIL import Image
+
 from tools.catsautomatic_gui import (
     GuiConfig,
     build_main_command,
+    copy_close_button_template,
+    gui_external_strategies_dir,
+    gui_close_button_templates_dir,
+    gui_strategy_names,
     output_dir,
     load_config,
     save_config,
+    update_config_from_adb_candidate,
 )
+from cats_automatic.adb_discovery import AdbCandidate, AdbDevice
 
 
 def test_gui_dry_run_command_never_contains_allow_click() -> None:
@@ -98,3 +106,64 @@ def test_gui_frozen_command_uses_sibling_cli_exe(monkeypatch) -> None:
 
 def test_gui_output_dir_can_be_based_on_release_dir() -> None:
     assert output_dir(Path(r"C:\Release")) == Path(r"C:\Release\output")
+
+
+def test_gui_close_button_template_dir_uses_release_base_dir() -> None:
+    assert gui_close_button_templates_dir(Path(r"C:\Release")) == Path(
+        r"C:\Release\user_templates\close_buttons"
+    )
+
+
+def test_gui_external_strategies_dir_uses_release_base_dir() -> None:
+    assert gui_external_strategies_dir(Path(r"C:\Release")) == Path(
+        r"C:\Release\external_strategies"
+    )
+
+
+def test_gui_strategy_names_include_builtin(tmp_path: Path) -> None:
+    assert "ad_reward" in gui_strategy_names(tmp_path / "external_strategies")
+
+
+def test_gui_update_config_from_adb_candidate_fills_path_and_device() -> None:
+    config = GuiConfig(adb_path="old", adb_serial="old-device")
+    candidate = AdbCandidate(
+        Path(r"C:\LDPlayer9\adb.exe"),
+        (AdbDevice("emulator-5556", "device"),),
+    )
+
+    updated = update_config_from_adb_candidate(config, candidate)
+
+    assert updated.adb_path == r"C:\LDPlayer9\adb.exe"
+    assert updated.adb_serial == "emulator-5556"
+    assert updated.repeat_after_reward == config.repeat_after_reward
+
+
+def test_gui_add_close_button_template_copies_png_with_next_number(tmp_path: Path) -> None:
+    source = tmp_path / "source.png"
+    template_dir = tmp_path / "user_templates" / "close_buttons"
+    _write_png(source)
+    _write_png(template_dir / "close-user-001.png", color=(0, 255, 0))
+
+    destination = copy_close_button_template(source, template_dir)
+
+    assert destination == template_dir / "close-user-002.png"
+    assert destination.exists()
+    assert (template_dir / "close-user-001.png").exists()
+
+
+def test_gui_add_close_button_template_does_not_overwrite_existing(tmp_path: Path) -> None:
+    source = tmp_path / "source.png"
+    template_dir = tmp_path / "user_templates" / "close_buttons"
+    existing = template_dir / "close-user-001.png"
+    _write_png(source, color=(255, 0, 0))
+    _write_png(existing, color=(0, 255, 0))
+
+    destination = copy_close_button_template(source, template_dir)
+
+    assert destination.name == "close-user-002.png"
+    assert existing.read_bytes() != destination.read_bytes()
+
+
+def _write_png(path: Path, color: tuple[int, int, int] = (255, 0, 0)) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (8, 8), color).save(path)

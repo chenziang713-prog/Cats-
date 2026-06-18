@@ -13,6 +13,7 @@ from .backends import (
     list_windows,
 )
 from .config_loader import load_flow
+from .external_strategy_loader import list_available_strategies
 from .game_loader import GameLoadError, load_game, load_strategy
 from .rules import RuleEngine
 from .runner import run_match_once, run_watch
@@ -207,6 +208,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="List top-level Windows windows and exit.",
     )
     parser.add_argument(
+        "--list-strategies",
+        action="store_true",
+        help="List built-in and external strategies and exit.",
+    )
+    parser.add_argument(
         "--replay-screens",
         action="append",
         nargs="+",
@@ -241,6 +247,9 @@ def main() -> None:
     args = build_parser().parse_args()
     if args.list_windows:
         print(format_window_list(list_windows()))
+        return
+    if args.list_strategies:
+        print(format_strategy_list(args.game or "cats"))
         return
     flow_path = args.flow or root / "configs" / "default-flow.json"
 
@@ -490,6 +499,20 @@ def runtime_root() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parents[2]
+
+
+def format_strategy_list(game_name: str = "cats") -> str:
+    strategies = list_available_strategies(game_name)
+    if not strategies:
+        return f"No strategies found for game: {game_name}"
+    lines = [f"Available strategies for game: {game_name}"]
+    for info in strategies:
+        extra = f" path={info.path}" if info.path is not None else ""
+        lines.append(
+            f"- {info.strategy_name}\t{info.display_name}\t"
+            f"source={info.source}\tversion={info.version or '-'}{extra}"
+        )
+    return "\n".join(lines)
 
 
 def print_run_record_summary(summary) -> None:

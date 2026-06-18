@@ -54,8 +54,9 @@ The first stable C.A.T.S. strategy feature was `ad_entry` detection. The current
 page: it detects `page_marker` first, then clicks `watch_ad_button` only when
 both are present. `page_marker` is a page marker only and is never clicked.
 Advertisement close buttons have the highest priority: the strategy checks the
-right-top `close-end-2` region first, then the left-top `close-end-1` region,
-and prints `close_ad` as a dry-run click when either one is detected.
+built-in `close-end-1` / `close-end-2` / `close-end-3` / `close-end-4`
+templates plus any user templates in `user_templates\close_buttons\`, then
+clicks the close template with the highest confidence and prints `close_ad`.
 If close buttons remain visible across multiple loops, `ad_reward` can keep
 closing them, but it stops after three consecutive `close_ad` decisions and
 prints `wait_close_limit_reached` until a non-close state resets the counter.
@@ -202,6 +203,12 @@ python -m cats_automatic.main `
 ADB mode only runs `adb devices` and `adb -s SERIAL exec-out screencap -p`.
 By default, ADB mode is still dry-run and does not tap.
 
+The Windows GUI can help find ADB on a new computer. Click `自动查找 ADB` to
+scan common emulator locations such as LDPlayer, 雷电, MuMu, Netease, and
+Program Files. It runs `adb devices`, ignores `offline` and `unauthorized`
+devices, fills the first recommended `device` serial, saves
+`output\gui_config.json`, and does not enable `allow-click`.
+
 Real ADB taps are guarded and only enabled when both conditions are true:
 
 ```text
@@ -250,6 +257,26 @@ During this cycle wait it does not capture, detect, click, or consume
 `--max-actions`; it checks the stop file every 0.5 seconds. Use `--max-cycles 2`
 to stop after two completed cycles, or leave `--max-cycles 0` for unlimited
 cycles.
+
+Add new close-button templates without rebuilding:
+
+```text
+user_templates\close_buttons\close-user-001.png
+user_templates\close_buttons\close-user-002.png
+```
+
+Crop the close button itself as a small PNG, click `添加关闭按钮模板` in the GUI,
+then run Dry-run first. When recognized, `click_records.csv` and debug
+detections show the real target name such as `close_user_001`. If a custom
+template mis-recognizes, delete the matching `close-user-xxx.png`.
+
+External strategy packages can be placed under `external_strategies\` without
+repacking the exe. Each package contains `manifest.json`, `strategy.py`, and
+optional `templates\`. Use `python -m cats_automatic.main --list-strategies` or
+the GUI `刷新功能列表` button to see built-in and external strategies. External
+strategy code must be trusted Python and still returns normal strategy
+decisions; real taps remain guarded by the existing `ActionBackend` and
+`--allow-click --capture-backend adb` checks.
 
 Example repeat run:
 
