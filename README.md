@@ -270,6 +270,25 @@ then run Dry-run first. When recognized, `click_records.csv` and debug
 detections show the real target name such as `close_user_001`. If a custom
 template mis-recognizes, delete the matching `close-user-xxx.png`.
 
+If the film page requires an optional choice before the watch button, add one
+PNG as `user_templates\pre_watch_optional\optional.png` or use the GUI
+`添加/替换可选点击模板` button. It is attempted only on the page-marker flow,
+at most once per cycle, and uses a one-second post-action delay. If it is
+missing or not detected, the strategy immediately continues to the watch
+button instead of blocking the flow.
+
+Additional watch-button styles can be added under
+`user_templates\watch_buttons\` as `watch-user-001.png`,
+`watch-user-002.png`, and so on. The built-in `watch_ad_button` remains active;
+when several built-in/user watch templates match, the strategy clicks the one
+with the highest confidence and records its real target name.
+
+A reward cycle completes either after an executed `confirm_reward`, or when an
+executed watch click plus at least one executed close action is followed by a
+high-confidence `ad_entry` home-page detection. The latter records
+`last_cycle_completed_reason: home_return_after_ad` and does not click the
+newly detected ad entry before cycle wait/end handling.
+
 External strategy packages can be placed under `external_strategies\` without
 repacking the exe. Each package contains `manifest.json`, `strategy.py`, and
 optional `templates\`. Use `python -m cats_automatic.main --list-strategies` or

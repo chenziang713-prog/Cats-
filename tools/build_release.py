@@ -101,8 +101,28 @@ POWERED BY 神箭
 
 十三、外部目录说明
 1. user_templates\\close_buttons\\：用户新增关闭按钮模板。
-2. external_strategies\\：外部 strategy 功能包。
-3. 这两个目录不会打进 exe 内部，方便后续直接增删文件。
+2. user_templates\\pre_watch_optional\\：看广告前可选点击模板，只保留 optional.png。
+3. user_templates\\watch_buttons\\：用户新增看广告按钮模板。
+4. external_strategies\\：外部 strategy 功能包。
+5. 这些目录不会打进 exe 内部，方便后续直接增删文件。
+
+十四、看广告前的可选点击项
+1. 如果胶卷页需要先点一个选项，点击“添加/替换可选点击模板”。
+2. 软件保存为 user_templates\\pre_watch_optional\\optional.png。
+3. 同一个 cycle 最多点击一次；识别不到会自动跳过，不影响看广告按钮。
+4. 不再需要时点击“清除可选点击模板”。
+
+十五、添加新的看广告按钮
+1. 裁剪新的看广告按钮 png。
+2. 点击“添加看广告按钮模板”。
+3. 软件保存为 watch-user-001.png、watch-user-002.png 等。
+4. 多个看广告按钮同时命中时，选择 confidence 最高的一个。
+5. 请先 Dry-run 测试，再开启真实运行。
+
+十六、cycle 完成判定
+1. confirm_reward 成功执行时，cycle 正常完成。
+2. 如果看广告并关闭广告后直接返回主页，高置信度 ad_entry 也会完成 cycle。
+3. summary.txt 可查看 total_cycles_completed、last_cycle_completed_reason 和 next_cycle_scheduled_at。
 """
 
 
@@ -157,6 +177,8 @@ def create_release() -> None:
     RELEASE_DIR.mkdir(parents=True, exist_ok=True)
     (RELEASE_DIR / "output").mkdir(parents=True, exist_ok=True)
     (RELEASE_DIR / "user_templates" / "close_buttons").mkdir(parents=True, exist_ok=True)
+    (RELEASE_DIR / "user_templates" / "pre_watch_optional").mkdir(parents=True, exist_ok=True)
+    (RELEASE_DIR / "user_templates" / "watch_buttons").mkdir(parents=True, exist_ok=True)
     (RELEASE_DIR / "external_strategies").mkdir(parents=True, exist_ok=True)
     shutil.copy2(DIST_DIR / "CATSautomatic.exe", RELEASE_DIR / "CATSautomatic.exe")
     shutil.copy2(DIST_DIR / "CATSautomatic-cli.exe", RELEASE_DIR / "CATSautomatic-cli.exe")

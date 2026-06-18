@@ -11,7 +11,7 @@ from unittest.mock import Mock
 import pytest
 from PIL import Image
 
-from cats_automatic.actions import AdbActionBackend, ClickAction, DryRunBackend, TapAction
+from cats_automatic.actions import ActionResult, AdbActionBackend, ClickAction, DryRunBackend, TapAction
 from cats_automatic.backends import (
     AdbCaptureBackend,
     CaptureBackendError,
@@ -176,6 +176,80 @@ def test_user_close_template_still_uses_close_limit() -> None:
         StrategyDecision.click("close_user_001", "close_ad", "close_ad"),
     ]
     assert decisions[3] == StrategyDecision.wait(1.0, "wait_close_limit_reached")
+
+
+def test_pre_watch_optional_is_clicked_before_watch_button() -> None:
+    strategy = AdRewardStrategy()
+    context = _context_with_detections(
+        {
+            "page_marker": _detection("page_marker"),
+            "pre_watch_optional": _detection("pre_watch_optional"),
+            "watch_ad_button": _detection("watch_ad_button"),
+        }
+    )
+
+    decision = strategy.decide(context)
+
+    assert decision == StrategyDecision.click(
+        "pre_watch_optional",
+        "click_pre_watch_optional",
+        "click_pre_watch_optional",
+    )
+    assert decision.post_action_delay_seconds == 1.0
+
+
+def test_pre_watch_optional_executes_only_once_per_cycle() -> None:
+    strategy = AdRewardStrategy()
+    context = _context_with_detections(
+        {
+            "page_marker": _detection("page_marker"),
+            "pre_watch_optional": _detection("pre_watch_optional"),
+            "watch_ad_button": _detection("watch_ad_button"),
+        }
+    )
+    first = strategy.decide(context)
+    strategy.on_action_result(first, ActionResult("dry_run_click", "executed"))
+
+    second = strategy.decide(context)
+    strategy.reset_cycle()
+    next_cycle = strategy.decide(context)
+
+    assert second.target_name == "watch_ad_button"
+    assert second.action_name == "click_watch_ad_button"
+    assert next_cycle.target_name == "pre_watch_optional"
+
+
+def test_missing_pre_watch_optional_does_not_block_watch_button() -> None:
+    strategy = AdRewardStrategy()
+
+    decision = strategy.decide(
+        _context_with_detections(
+            {
+                "page_marker": _detection("page_marker"),
+                "watch_ad_button": _detection("watch_ad_button"),
+            }
+        )
+    )
+
+    assert decision.target_name == "watch_ad_button"
+    assert decision.action_name == "click_watch_ad_button"
+
+
+def test_watch_button_candidates_choose_highest_confidence() -> None:
+    strategy = AdRewardStrategy()
+    decision = strategy.decide(
+        _context_with_detections(
+            {
+                "page_marker": _detection("page_marker"),
+                "watch_ad_button": _detection("watch_ad_button", confidence=0.91),
+                "watch_user_001": _detection("watch_user_001", confidence=0.98),
+            }
+        )
+    )
+
+    assert decision.target_name == "watch_user_001"
+    assert decision.action_name == "click_watch_ad_button"
+    assert decision.post_action_delay_seconds == 15.0
 
 
 def test_runtime_user_templates_dir_uses_base_dir(tmp_path: Path) -> None:
@@ -715,6 +789,45 @@ def test_strategy_runner_records_user_close_template_target_name(tmp_path: Path)
     assert "close_user_001" in debug_json
 
 
+def test_strategy_runner_records_user_watch_template_target_name(tmp_path: Path) -> None:
+    screen = tmp_path / "screen.png"
+    screen.write_text("fake", encoding="utf-8")
+    template_dir = tmp_path / "user_templates" / "watch_buttons"
+    user_template = template_dir / "watch-user-001.png"
+    _write_png(user_template)
+    recorder = RunRecorder(
+        output_root=tmp_path / "runs",
+        capture_backend="fake",
+        run_id="user-watch",
+    )
+
+    def matcher(_screen: Path, template_path: Path, **_: object) -> MatchResult:
+        if template_path.name in {"page-marker.png", "watch-user-001.png"}:
+            confidence = 0.99 if template_path.name == "watch-user-001.png" else 0.95
+            return MatchResult(confidence, (10, 20), (30, 40))
+        return MatchResult(0.0, (0, 0), (1, 1))
+
+    runner = StrategyRunner(
+        game=load_game("cats"),
+        strategy=AdRewardStrategy(user_watch_template_dir=template_dir),
+        capture_backend=FakeCaptureBackend(screen),
+        action_backend=DryRunBackend(),
+        root=Path(__file__).resolve().parents[1],
+        output_dir=tmp_path / "output",
+        max_loops=1,
+        run_recorder=recorder,
+        matcher=matcher,
+        sleep=lambda _: None,
+    )
+
+    runner.run()
+
+    records = _read_click_records(recorder.click_records_path)
+    assert records[0]["decision"] == "click_watch_ad_button"
+    assert records[0]["target_name"] == "watch_user_001"
+    assert records[0]["post_action_delay_seconds"] == "15.000"
+
+
 def test_strategy_runner_records_dry_run_post_action_delay(tmp_path: Path) -> None:
     screen = tmp_path / "screen.png"
     screen.write_text("fake", encoding="utf-8")
@@ -1040,6 +1153,46 @@ def test_strategy_runner_stops_after_reward_without_repeat(tmp_path: Path) -> No
     assert records[0]["decision"] == "confirm_reward"
     assert "total_cycles_completed: 1" in summary
     assert "stop_reason: reward_flow_completed" in summary
+
+
+def test_strategy_runner_completes_cycle_when_ad_returns_home(tmp_path: Path) -> None:
+    runner, recorder = _build_home_return_runner(tmp_path, repeat_after_reward=False)
+
+    runner.run()
+
+    records = _read_click_records(recorder.click_records_path)
+    summary = recorder.summary_path.read_text(encoding="utf-8")
+    events = recorder.events_path.read_text(encoding="utf-8")
+    assert [record["decision"] for record in records] == ["click_watch_ad_button", "close_ad"]
+    assert "click_ad_entry" not in [record["decision"] for record in records]
+    assert "total_cycles_completed: 1" in summary
+    assert "last_cycle_completed_reason: home_return_after_ad" in summary
+    assert "stop_reason: reward_flow_completed_by_home_return" in summary
+    assert '"event": "cycle_completed"' in events
+    assert '"reason": "home_return_after_ad"' in events
+    assert '"confidence": 0.95' in events
+
+
+def test_home_return_cycle_completion_enters_repeat_wait(tmp_path: Path) -> None:
+    stop_file = tmp_path / "STOP"
+
+    def sleep(_: float) -> None:
+        stop_file.touch()
+
+    runner, recorder = _build_home_return_runner(
+        tmp_path,
+        repeat_after_reward=True,
+        stop_file=stop_file,
+        sleep=sleep,
+    )
+
+    runner.run()
+
+    events = recorder.events_path.read_text(encoding="utf-8")
+    summary = recorder.summary_path.read_text(encoding="utf-8")
+    assert '"event": "cycle_wait_started"' in events
+    assert '"event": "cycle_wait_interrupted_by_stop_file"' in events
+    assert "stop_reason: stop_file" in summary
 
 
 def test_strategy_runner_repeat_after_reward_waits_and_starts_next_cycle(tmp_path: Path) -> None:
@@ -2368,6 +2521,24 @@ class ConfirmRewardStrategy:
         return StrategyDecision.click("target", "confirm_reward")
 
 
+class HomeReturnStrategy:
+    def targets(self) -> list[TargetSpec]:
+        return [
+            TargetSpec("watch_target", "templates/watch.png", 0.8),
+            TargetSpec("close_target", "templates/close.png", 0.8),
+            TargetSpec("ad_entry", "templates/ad_entry.png", 0.8),
+        ]
+
+    def decide(self, context: StrategyContext) -> StrategyDecision:
+        if "watch_target" in context.detections:
+            return StrategyDecision.click("watch_target", "click_watch_ad_button")
+        if "close_target" in context.detections:
+            return StrategyDecision.click("close_target", "close_ad")
+        if "ad_entry" in context.detections:
+            return StrategyDecision.click("ad_entry", "click_ad_entry")
+        return StrategyDecision.wait(0.0, "wait")
+
+
 class OutOfBoundsRegionStrategy:
     def targets(self) -> list[TargetSpec]:
         return [TargetSpec("target", "templates/target.png", 0.5, region=RegionLikeOutOfBounds())]
@@ -2394,6 +2565,18 @@ class FakeCaptureBackend:
         return WindowFrame(self.path, "fake", (0, 0), (100, 100))
 
 
+@dataclass
+class SequenceCaptureBackend:
+    paths: list[Path]
+    name: str = "fake"
+    index: int = 0
+
+    def capture(self, output_path: Path) -> WindowFrame:
+        path = self.paths[min(self.index, len(self.paths) - 1)]
+        self.index += 1
+        return WindowFrame(path, "fake", (0, 0), (100, 100))
+
+
 class RecordingActionBackend:
     def __init__(self) -> None:
         self.action_count = 0
@@ -2416,3 +2599,55 @@ class RecordingActionBackend:
 def _read_click_records(path: Path) -> list[dict[str, str]]:
     with path.open(newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
+
+
+def _build_home_return_runner(
+    tmp_path: Path,
+    *,
+    repeat_after_reward: bool,
+    stop_file: Path | None = None,
+    sleep=lambda _: None,
+) -> tuple[StrategyRunner, RunRecorder]:
+    templates = tmp_path / "templates"
+    templates.mkdir(exist_ok=True)
+    for name in ("watch.png", "close.png", "ad_entry.png"):
+        (templates / name).touch()
+    screens: list[Path] = []
+    for stage in ("watch", "close", "ad_entry"):
+        path = tmp_path / f"{stage}.png"
+        path.write_text(stage, encoding="utf-8")
+        screens.append(path)
+    recorder = RunRecorder(
+        output_root=tmp_path / "runs",
+        capture_backend="fake",
+        repeat_after_reward=repeat_after_reward,
+        cycle_wait_seconds=1.0,
+        run_id="home-return",
+    )
+
+    def matcher(screen: Path, template: Path, **_: object) -> MatchResult:
+        stage = screen.read_text(encoding="utf-8")
+        expected_template = {
+            "watch": "watch.png",
+            "close": "close.png",
+            "ad_entry": "ad_entry.png",
+        }[stage]
+        confidence = 0.95 if template.name == expected_template else 0.0
+        return MatchResult(confidence, (10, 20), (30, 40))
+
+    runner = StrategyRunner(
+        game=GameDefinition("test", tmp_path / "config.json", templates),
+        strategy=HomeReturnStrategy(),
+        capture_backend=SequenceCaptureBackend(screens),
+        action_backend=DryRunBackend(max_actions=8),
+        root=tmp_path,
+        output_dir=tmp_path / "output",
+        max_loops=3,
+        run_recorder=recorder,
+        stop_file=stop_file,
+        repeat_after_reward=repeat_after_reward,
+        cycle_wait_seconds=1.0,
+        matcher=matcher,
+        sleep=sleep,
+    )
+    return runner, recorder

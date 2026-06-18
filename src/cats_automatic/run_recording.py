@@ -85,6 +85,7 @@ class RunRecorder:
         self.total_cycles_completed = 0
         self.current_cycle_index = 1
         self.last_cycle_completed_at = ""
+        self.last_cycle_completed_reason = ""
         self.next_cycle_scheduled_at = ""
         self.last_decision = ""
         self.last_screenshot = ""
@@ -113,11 +114,18 @@ class RunRecorder:
         self.set_cycle_index(cycle_index)
         self.event("cycle_started", cycle_index=cycle_index)
 
-    def record_cycle_completed(self, cycle_index: int) -> None:
+    def record_cycle_completed(
+        self,
+        cycle_index: int,
+        *,
+        reason: str = "confirm_reward",
+        last_seen_ad_entry: DetectionResult | None = None,
+    ) -> None:
         completed_at = _timestamp()
         self.total_cycles_completed += 1
         self.current_cycle_index = cycle_index
         self.last_cycle_completed_at = completed_at
+        self.last_cycle_completed_reason = reason
         should_schedule_next = (
             self.repeat_after_reward
             and (self.max_cycles == 0 or self.total_cycles_completed < self.max_cycles)
@@ -125,12 +133,19 @@ class RunRecorder:
         self.next_cycle_scheduled_at = (
             _future_timestamp(self.cycle_wait_seconds) if should_schedule_next else ""
         )
-        self.event(
-            "cycle_completed",
-            cycle_index=cycle_index,
-            completed_at=completed_at,
-            total_cycles_completed=self.total_cycles_completed,
-        )
+        payload: dict[str, Any] = {
+            "cycle_index": cycle_index,
+            "completed_at": completed_at,
+            "total_cycles_completed": self.total_cycles_completed,
+            "reason": reason,
+        }
+        if last_seen_ad_entry is not None:
+            payload["last_seen_ad_entry"] = {
+                "confidence": last_seen_ad_entry.confidence,
+                "center": list(last_seen_ad_entry.center),
+                "threshold": last_seen_ad_entry.threshold,
+            }
+        self.event("cycle_completed", **payload)
 
     def record_cycle_wait_started(
         self,
@@ -350,6 +365,7 @@ class RunRecorder:
             f"total_cycles_completed: {self.total_cycles_completed}",
             f"current_cycle_index: {self.current_cycle_index}",
             f"last_cycle_completed_at: {self.last_cycle_completed_at}",
+            f"last_cycle_completed_reason: {self.last_cycle_completed_reason}",
             f"next_cycle_scheduled_at: {self.next_cycle_scheduled_at}",
             f"repeat_after_reward: {str(self.repeat_after_reward).lower()}",
             f"cycle_wait_seconds: {self.cycle_wait_seconds:g}",

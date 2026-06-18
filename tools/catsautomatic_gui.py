@@ -31,6 +31,13 @@ from cats_automatic.external_strategy_loader import (
 from cats_automatic.runtime_paths import (
     close_button_templates_dir as runtime_close_button_templates_dir,
     external_strategies_dir as runtime_external_strategies_dir,
+    pre_watch_optional_templates_dir as runtime_pre_watch_optional_templates_dir,
+    watch_button_templates_dir as runtime_watch_button_templates_dir,
+)
+from cats_automatic.user_ad_reward_templates import (
+    add_watch_button_template,
+    clear_pre_watch_optional_template,
+    set_pre_watch_optional_template,
 )
 from cats_automatic.user_close_templates import (
     add_close_button_template,
@@ -182,8 +189,24 @@ def gui_external_strategies_dir(base_dir: Path | None = None) -> Path:
     return runtime_external_strategies_dir(base_dir or ROOT)
 
 
+def gui_pre_watch_optional_dir(base_dir: Path | None = None) -> Path:
+    return runtime_pre_watch_optional_templates_dir(base_dir or ROOT)
+
+
+def gui_watch_button_templates_dir(base_dir: Path | None = None) -> Path:
+    return runtime_watch_button_templates_dir(base_dir or ROOT)
+
+
 def copy_close_button_template(source_path: Path, template_dir: Path | None = None) -> Path:
     return add_close_button_template(source_path, template_dir or gui_close_button_templates_dir())
+
+
+def copy_pre_watch_optional_template(source_path: Path, template_dir: Path | None = None) -> Path:
+    return set_pre_watch_optional_template(source_path, template_dir or gui_pre_watch_optional_dir())
+
+
+def copy_watch_button_template(source_path: Path, template_dir: Path | None = None) -> Path:
+    return add_watch_button_template(source_path, template_dir or gui_watch_button_templates_dir())
 
 
 def gui_strategy_names(base_dir: Path | None = None) -> list[str]:
@@ -281,6 +304,11 @@ class CatsAutomaticGui:
             ("打开关闭按钮模板目录", self.open_close_template_dir, None),
             ("添加关闭按钮模板", self.add_close_template, None),
             ("重新扫描模板", self.reload_close_templates, None),
+            ("打开可选点击模板目录", self.open_pre_watch_optional_dir, None),
+            ("添加/替换可选点击模板", self.set_pre_watch_optional, None),
+            ("清除可选点击模板", self.clear_pre_watch_optional, None),
+            ("打开看广告按钮模板目录", self.open_watch_templates_dir, None),
+            ("添加看广告按钮模板", self.add_watch_template, None),
             ("打开功能目录", self.open_external_strategies_dir, None),
             ("导入功能包", self.import_external_strategy, None),
             ("刷新功能列表", self.refresh_strategy_list, None),
@@ -663,6 +691,53 @@ class CatsAutomaticGui:
         count = count_user_close_templates(template_dir)
         self.append_log(f"已扫描用户关闭按钮模板: {count} 个，目录: {template_dir}")
         self.append_log("提示: 如果任务已经在运行，请停止后重新开始以确保使用最新模板。")
+
+    def open_pre_watch_optional_dir(self) -> None:
+        template_dir = gui_pre_watch_optional_dir()
+        self.append_log(f"可选点击模板目录: {template_dir}")
+        self.open_path(template_dir)
+
+    def set_pre_watch_optional(self) -> None:
+        selected = filedialog.askopenfilename(
+            title="选择可选点击 PNG 模板",
+            filetypes=[("PNG 图片", "*.png")],
+        )
+        if not selected:
+            return
+        destination = gui_pre_watch_optional_dir() / "optional.png"
+        if destination.exists() and not messagebox.askyesno("替换模板", "optional.png 已存在，是否替换？"):
+            return
+        try:
+            destination = copy_pre_watch_optional_template(Path(selected))
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("设置模板失败", str(exc))
+            self.append_log(f"设置可选点击模板失败: {exc}")
+            return
+        self.append_log(f"已设置可选点击模板: {destination}")
+
+    def clear_pre_watch_optional(self) -> None:
+        removed = clear_pre_watch_optional_template(gui_pre_watch_optional_dir())
+        self.append_log("已清除可选点击模板。" if removed else "当前没有可选点击模板。")
+
+    def open_watch_templates_dir(self) -> None:
+        template_dir = gui_watch_button_templates_dir()
+        self.append_log(f"看广告按钮模板目录: {template_dir}")
+        self.open_path(template_dir)
+
+    def add_watch_template(self) -> None:
+        selected = filedialog.askopenfilename(
+            title="选择看广告按钮 PNG 模板",
+            filetypes=[("PNG 图片", "*.png")],
+        )
+        if not selected:
+            return
+        try:
+            destination = copy_watch_button_template(Path(selected))
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("添加模板失败", str(exc))
+            self.append_log(f"添加看广告按钮模板失败: {exc}")
+            return
+        self.append_log(f"已添加看广告按钮模板: {destination}")
 
     def open_external_strategies_dir(self) -> None:
         strategies_dir = gui_external_strategies_dir()

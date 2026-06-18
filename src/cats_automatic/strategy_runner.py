@@ -68,6 +68,10 @@ class StrategyRunner:
         self._last_decision: StrategyDecision | None = None
         self._last_action_result: ActionResult | None = None
         self._current_cycle_index = 1
+        self.watch_ad_clicked_in_cycle = False
+        self.close_ad_executed_in_cycle_count = 0
+        self.confirm_reward_executed_in_cycle = False
+        self.returned_to_home_after_ad = False
 
     def run(self) -> int:
         completed = 0
@@ -118,6 +122,19 @@ class StrategyRunner:
                     f"center={detection.center}"
                 )
 
+            home_return_detection = self._home_return_detection(detections)
+            if home_return_detection is not None:
+                self.returned_to_home_after_ad = True
+                completion_stop_reason = self._complete_cycle(
+                    reason="home_return_after_ad",
+                    last_seen_ad_entry=home_return_detection,
+                )
+                if completion_stop_reason is not None:
+                    stop_reason = completion_stop_reason
+                    break
+                loop_index += 1
+                continue
+
             context = StrategyContext(
                 loop_index=loop_index,
                 screen_path=frame.path,
@@ -133,18 +150,10 @@ class StrategyRunner:
                 stop_reason = "stop_file"
                 break
             if self._is_reward_cycle_completed():
-                self._record_cycle_completed()
-                if not self.repeat_after_reward:
-                    stop_reason = "reward_flow_completed"
+                completion_stop_reason = self._complete_cycle(reason="confirm_reward")
+                if completion_stop_reason is not None:
+                    stop_reason = completion_stop_reason
                     break
-                if self.max_cycles > 0 and self._completed_cycles() >= self.max_cycles:
-                    stop_reason = "max_cycles_reached"
-                    break
-                if self._cycle_wait():
-                    stop_reason = "stop_file"
-                    break
-                self._current_cycle_index += 1
-                self._start_cycle(self._current_cycle_index)
             if decision.kind == "stop":
                 stop_reason = decision.reason or "stop"
                 break
@@ -266,14 +275,14 @@ class StrategyRunner:
         self._last_decision = decision
         self._last_action_result = action_result
         self._record_action(decision, action_result, detection, delay_info)
+        self._update_cycle_state(decision, action_result)
+        if hasattr(self.strategy, "on_action_result"):
+            self.strategy.on_action_result(decision, action_result)
         return True
 
     def _is_reward_cycle_completed(self) -> bool:
         return (
-            self._last_decision is not None
-            and self._last_action_result is not None
-            and self._last_decision.action_name == "confirm_reward"
-            and self._last_action_result.result == "executed"
+            self.confirm_reward_executed_in_cycle
         )
 
     def _completed_cycles(self) -> int:
@@ -286,17 +295,94 @@ class StrategyRunner:
         self._stop_requested = False
         self._last_decision = None
         self._last_action_result = None
-        if hasattr(self.strategy, "_reset_close_limit"):
+        self.watch_ad_clicked_in_cycle = False
+        self.close_ad_executed_in_cycle_count = 0
+        self.confirm_reward_executed_in_cycle = False
+        self.returned_to_home_after_ad = False
+        if hasattr(self.strategy, "reset_cycle"):
+            self.strategy.reset_cycle()
+        elif hasattr(self.strategy, "_reset_close_limit"):
             self.strategy._reset_close_limit()
         if hasattr(self.action_backend, "reset_cycle"):
             self.action_backend.reset_cycle()
         if self.run_recorder is not None:
             self.run_recorder.record_cycle_started(cycle_index)
 
-    def _record_cycle_completed(self) -> None:
-        print(f"Cycle {self._current_cycle_index} completed")
+    def _record_cycle_completed(
+        self,
+        *,
+        reason: str,
+        last_seen_ad_entry: DetectionResult | None = None,
+    ) -> None:
+        print(f"Cycle {self._current_cycle_index} completed reason={reason}")
         if self.run_recorder is not None:
-            self.run_recorder.record_cycle_completed(self._current_cycle_index)
+            self.run_recorder.record_cycle_completed(
+                self._current_cycle_index,
+                reason=reason,
+                last_seen_ad_entry=last_seen_ad_entry,
+            )
+            if reason == "home_return_after_ad":
+                self.run_recorder.event(
+                    "cycle_completed_by_home_return",
+                    cycle_index=self._current_cycle_index,
+                    confidence=last_seen_ad_entry.confidence if last_seen_ad_entry else None,
+                    center=list(last_seen_ad_entry.center) if last_seen_ad_entry else None,
+                )
+
+    def _complete_cycle(
+        self,
+        *,
+        reason: str,
+        last_seen_ad_entry: DetectionResult | None = None,
+    ) -> str | None:
+        self._record_cycle_completed(reason=reason, last_seen_ad_entry=last_seen_ad_entry)
+        if not self.repeat_after_reward:
+            return (
+                "reward_flow_completed_by_home_return"
+                if reason == "home_return_after_ad"
+                else "reward_flow_completed"
+            )
+        if self.max_cycles > 0 and self._completed_cycles() >= self.max_cycles:
+            return "max_cycles_reached"
+        if self._cycle_wait():
+            return "stop_file"
+        self._current_cycle_index += 1
+        self._start_cycle(self._current_cycle_index)
+        return None
+
+    def _home_return_detection(
+        self,
+        detections: dict[str, DetectionResult],
+    ) -> DetectionResult | None:
+        if not self.watch_ad_clicked_in_cycle or self.close_ad_executed_in_cycle_count < 1:
+            return None
+        if "reward_confirm_marker" in detections or "confirm_button" in detections:
+            return None
+        detection = detections.get("ad_entry")
+        if detection is None:
+            return None
+        min_confidence = (
+            self.run_recorder.min_click_confidence
+            if self.run_recorder is not None
+            else 0.80
+        )
+        if detection.confidence < min_confidence:
+            return None
+        return detection
+
+    def _update_cycle_state(
+        self,
+        decision: StrategyDecision,
+        action_result: ActionResult,
+    ) -> None:
+        if action_result.result != "executed":
+            return
+        if decision.action_name == "click_watch_ad_button":
+            self.watch_ad_clicked_in_cycle = True
+        elif decision.action_name == "close_ad":
+            self.close_ad_executed_in_cycle_count += 1
+        elif decision.action_name == "confirm_reward":
+            self.confirm_reward_executed_in_cycle = True
 
     def _cycle_wait(self) -> bool:
         seconds = self.cycle_wait_seconds

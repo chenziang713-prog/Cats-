@@ -9,9 +9,13 @@ from tools.catsautomatic_gui import (
     GuiConfig,
     build_main_command,
     copy_close_button_template,
+    copy_pre_watch_optional_template,
+    copy_watch_button_template,
     gui_external_strategies_dir,
     gui_close_button_templates_dir,
+    gui_pre_watch_optional_dir,
     gui_strategy_names,
+    gui_watch_button_templates_dir,
     output_dir,
     load_config,
     save_config,
@@ -120,6 +124,15 @@ def test_gui_external_strategies_dir_uses_release_base_dir() -> None:
     )
 
 
+def test_gui_optional_and_watch_dirs_use_release_base_dir() -> None:
+    assert gui_pre_watch_optional_dir(Path(r"C:\Release")) == Path(
+        r"C:\Release\user_templates\pre_watch_optional"
+    )
+    assert gui_watch_button_templates_dir(Path(r"C:\Release")) == Path(
+        r"C:\Release\user_templates\watch_buttons"
+    )
+
+
 def test_gui_strategy_names_include_builtin(tmp_path: Path) -> None:
     assert "ad_reward" in gui_strategy_names(tmp_path / "external_strategies")
 
@@ -162,6 +175,29 @@ def test_gui_add_close_button_template_does_not_overwrite_existing(tmp_path: Pat
 
     assert destination.name == "close-user-002.png"
     assert existing.read_bytes() != destination.read_bytes()
+
+
+def test_gui_copy_optional_template_replaces_optional_png(tmp_path: Path) -> None:
+    source = tmp_path / "source.png"
+    template_dir = tmp_path / "pre_watch_optional"
+    _write_png(source)
+    _write_png(template_dir / "old.png", color=(0, 255, 0))
+
+    destination = copy_pre_watch_optional_template(source, template_dir)
+
+    assert destination == template_dir / "optional.png"
+    assert [path.name for path in template_dir.glob("*.png")] == ["optional.png"]
+
+
+def test_gui_copy_watch_template_uses_next_number(tmp_path: Path) -> None:
+    source = tmp_path / "source.png"
+    template_dir = tmp_path / "watch_buttons"
+    _write_png(source)
+    _write_png(template_dir / "watch-user-001.png")
+
+    destination = copy_watch_button_template(source, template_dir)
+
+    assert destination.name == "watch-user-002.png"
 
 
 def _write_png(path: Path, color: tuple[int, int, int] = (255, 0, 0)) -> None:
