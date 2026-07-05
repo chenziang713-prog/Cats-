@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from .actions import ActionResult
+from .diagnosis import generate_diagnosis
 from .strategy_base import DetectionResult, StrategyDecision
 
 
@@ -60,17 +61,24 @@ class RunRecorder:
         repeat_after_reward: bool = False,
         cycle_wait_seconds: float = 1800.0,
         max_cycles: int = 0,
+        strategy_name: str = "",
+        battle_wait_seconds: float = 60.0,
+        ad_wait_seconds: float = 20.0,
         run_id: str | None = None,
     ) -> None:
         self.run_id = run_id or datetime.now().strftime("%Y%m%d-%H%M%S")
         self.run_dir = _unique_run_dir(output_root, self.run_id)
         self.run_id = self.run_dir.name
         self.screenshots_dir = self.run_dir / "screenshots"
-        self.debug_dir = self.run_dir / "debug"
-        self.log_path = self.run_dir / "run.log"
+        self.logs_dir = self.run_dir / "logs"
+        self.state_results_dir = self.run_dir / "state_results"
+        self.debug_dir = self.state_results_dir
+        self.log_path = self.logs_dir / "run.log"
         self.click_records_path = self.run_dir / "click_records.csv"
         self.events_path = self.run_dir / "events.jsonl"
+        self.phase_journal_path = self.run_dir / "phase_journal.jsonl"
         self.summary_path = self.run_dir / "summary.txt"
+        self.diagnosis_path = self.run_dir / "diagnosis.txt"
         self.capture_backend = capture_backend
         self.adb_serial = adb_serial
         self.max_actions_limit = max_actions_limit
@@ -78,6 +86,9 @@ class RunRecorder:
         self.repeat_after_reward = repeat_after_reward
         self.cycle_wait_seconds = cycle_wait_seconds
         self.max_cycles = max_cycles
+        self.strategy_name = strategy_name
+        self.battle_wait_seconds = battle_wait_seconds
+        self.ad_wait_seconds = ad_wait_seconds
         self.start_time = _timestamp()
         self.end_time = ""
         self.total_loops = 0
@@ -91,21 +102,53 @@ class RunRecorder:
         self.last_screenshot = ""
         self.stop_reason = "completed"
         self.last_adb_tap: dict[str, str] = {}
+        self.last_adb_keyevent: dict[str, str] = {}
         self.last_delay: dict[str, str] = {}
+        self.last_wait: dict[str, str] = {}
+        self.total_recovery_attempts = 0
+        self.recovery_succeeded_count = 0
+        self.recovery_failed_count = 0
+        self.click_no_effect_count = 0
+        self.diagnosis_text = ""
+        self.license_status = "not_checked"
+        self.license_key_masked = ""
+        self.license_expires_at = ""
+        self.license_features: tuple[str, ...] = ()
+        self.last_license_error = ""
+        self.error_popup_recovery_attempts = 0
+        self.error_popup_recovery_successes = 0
+        self.error_popup_recovery_failures = 0
+        self.last_error_popup_name = ""
+        self.last_error_popup_button_name = ""
         self.finished = False
         self._csv_handle: TextIO | None = None
         self._events_handle: TextIO | None = None
+        self._phase_journal_handle: TextIO | None = None
         self._log_handle: TextIO | None = None
 
         self.screenshots_dir.mkdir(parents=True, exist_ok=True)
-        self.debug_dir.mkdir(parents=True, exist_ok=True)
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self.state_results_dir.mkdir(parents=True, exist_ok=True)
         self._csv_handle = self.click_records_path.open("w", newline="", encoding="utf-8")
         self._csv_writer = csv.DictWriter(self._csv_handle, fieldnames=CLICK_RECORD_FIELDS)
         self._csv_writer.writeheader()
         self._csv_handle.flush()
         self._events_handle = self.events_path.open("a", encoding="utf-8")
+        self._phase_journal_handle = self.phase_journal_path.open("a", encoding="utf-8")
         self._log_handle = self.log_path.open("a", encoding="utf-8")
         self.event("run_started", run_id=self.run_id, capture_backend=capture_backend)
+
+    def record_phase_snapshot(self, payload: dict[str, Any]) -> None:
+        if self._phase_journal_handle is None:
+            return
+        record = {
+            "run_id": self.run_id,
+            "timestamp": _timestamp(),
+            "cycle_index": self.current_cycle_index,
+            **payload,
+        }
+        self._phase_journal_handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        self._phase_journal_handle.flush()
 
     def set_cycle_index(self, cycle_index: int) -> None:
         self.current_cycle_index = cycle_index
@@ -239,7 +282,10 @@ class RunRecorder:
         decision_name = decision.action_name or decision.kind
         self.last_decision = decision_name
         confidence = "" if detection is None else f"{detection.confidence:.3f}"
-        threshold = "" if detection is None else f"{detection.threshold:.3f}"
+        effective_threshold = decision.min_click_confidence_override
+        if effective_threshold is None and detection is not None:
+            effective_threshold = detection.threshold
+        threshold = "" if effective_threshold is None else f"{effective_threshold:.3f}"
         click_x = "" if detection is None else str(detection.center[0])
         click_y = "" if detection is None else str(detection.center[1])
         reason = action_result.reason or decision.reason
@@ -282,6 +328,8 @@ class RunRecorder:
             self.total_clicks += 1
         if action_result.action_type == "adb_tap" and action_result.result == "executed":
             self.last_adb_tap = {key: str(value) for key, value in row.items()}
+        if action_result.action_type == "adb_keyevent" and action_result.result == "executed":
+            self.last_adb_keyevent = {key: str(value) for key, value in row.items()}
         if post_action_delay_seconds > 0:
             self.last_delay = {
                 "seconds": f"{post_action_delay_seconds:.3f}",
@@ -319,8 +367,48 @@ class RunRecorder:
             delay_interrupted_by_stop_file=interrupted_by_stop_file,
         )
 
+    def record_strategy_wait_started(self, wait_name: str, seconds: float) -> None:
+        self.last_wait = {
+            "name": wait_name,
+            "seconds": f"{seconds:.3f}",
+            "status": "started",
+        }
+        self.event(f"{wait_name}_started", seconds=seconds, cycle_index=self.current_cycle_index)
+
+    def record_strategy_wait_finished(self, wait_name: str, interrupted: bool) -> None:
+        self.last_wait = {
+            "name": wait_name,
+            "seconds": self.last_wait.get("seconds", ""),
+            "status": "interrupted" if interrupted else "finished",
+        }
+        self.event(
+            f"{wait_name}_interrupted_by_stop_file" if interrupted else f"{wait_name}_finished",
+            interrupted_by_stop_file=interrupted,
+            cycle_index=self.current_cycle_index,
+        )
+
     def event(self, event_type: str, **payload: Any) -> None:
-        event = {"timestamp": _timestamp(), "event": event_type, **payload}
+        if event_type == "recovery_action":
+            self.total_recovery_attempts += 1
+        elif event_type == "recovery_succeeded":
+            self.recovery_succeeded_count += 1
+        elif event_type == "recovery_failed":
+            self.recovery_failed_count += 1
+        elif event_type == "click_no_effect_detected":
+            self.click_no_effect_count += 1
+        elif event_type == "error_popup_recovery_started":
+            self.error_popup_recovery_attempts += 1
+        elif event_type == "error_popup_recovery_succeeded":
+            self.error_popup_recovery_successes += 1
+        elif event_type == "error_popup_recovery_failed":
+            self.error_popup_recovery_failures += 1
+        if event_type == "error_popup_detected":
+            self.last_error_popup_name = str(payload.get("target_name", ""))
+        elif event_type in {"error_popup_button_detected", "error_popup_button_clicked"}:
+            self.last_error_popup_button_name = str(
+                payload.get("target_name", payload.get("button_name", ""))
+            )
+        event = {"timestamp": _timestamp(), "event": event_type, "run_id": self.run_id, **payload}
         line = json.dumps(event, ensure_ascii=False)
         if self._events_handle is not None:
             self._events_handle.write(line + "\n")
@@ -328,6 +416,32 @@ class RunRecorder:
         if self._log_handle is not None:
             self._log_handle.write(f"{event['timestamp']} {event_type} {payload}\n")
             self._log_handle.flush()
+
+    def record_license_status(
+        self,
+        *,
+        event_type: str,
+        status: str,
+        license_key_masked: str = "",
+        expires_at: str = "",
+        features: tuple[str, ...] = (),
+        error: str = "",
+        message: str = "",
+    ) -> None:
+        self.license_status = status
+        self.license_key_masked = license_key_masked
+        self.license_expires_at = expires_at
+        self.license_features = features
+        self.last_license_error = error
+        self.event(
+            event_type,
+            status=status,
+            license_key_masked=license_key_masked,
+            expires_at=expires_at,
+            features=list(features),
+            error=error,
+            message=message,
+        )
 
     def record_exception(self, exc: BaseException) -> None:
         self.stop_reason = f"exception: {exc}"
@@ -344,7 +458,20 @@ class RunRecorder:
             self.stop_reason = stop_reason
         self.end_time = _timestamp()
         self.event("run_finished", stop_reason=self.stop_reason)
+        self.diagnosis_text = generate_diagnosis(
+            strategy_name=self.strategy_name,
+            click_records_path=self.click_records_path,
+            events_path=self.events_path,
+            phase_journal_path=self.phase_journal_path,
+            total_loops=self.total_loops,
+            total_clicks=self.total_clicks,
+            total_cycles_completed=self.total_cycles_completed,
+            stop_reason=self.stop_reason,
+        )
+        self.diagnosis_path.write_text(self.diagnosis_text, encoding="utf-8")
+        print(self.diagnosis_text, end="")
         self.write_summary()
+        self.update_latest()
         self.finished = True
         self.close()
         return RunRecordSummary(
@@ -357,6 +484,7 @@ class RunRecorder:
         last_adb_tap = self.last_adb_tap or {}
         lines = [
             f"run_id: {self.run_id}",
+            f"strategy: {self.strategy_name}",
             f"start_time: {self.start_time}",
             f"end_time: {self.end_time or _timestamp()}",
             f"adb_serial: {self.adb_serial}",
@@ -370,6 +498,22 @@ class RunRecorder:
             f"repeat_after_reward: {str(self.repeat_after_reward).lower()}",
             f"cycle_wait_seconds: {self.cycle_wait_seconds:g}",
             f"max_cycles: {self.max_cycles}",
+            f"battle_wait_seconds: {self.battle_wait_seconds:g}",
+            f"ad_wait_seconds: {self.ad_wait_seconds:g}",
+            f"total_recovery_attempts: {self.total_recovery_attempts}",
+            f"recovery_succeeded_count: {self.recovery_succeeded_count}",
+            f"recovery_failed_count: {self.recovery_failed_count}",
+            f"click_no_effect_count: {self.click_no_effect_count}",
+            f"license_status: {self.license_status}",
+            f"license_key_masked: {self.license_key_masked}",
+            f"license_expires_at: {self.license_expires_at}",
+            f"license_features: {','.join(self.license_features)}",
+            f"last_license_error: {self.last_license_error}",
+            f"error_popup_recovery_attempts: {self.error_popup_recovery_attempts}",
+            f"error_popup_recovery_successes: {self.error_popup_recovery_successes}",
+            f"error_popup_recovery_failures: {self.error_popup_recovery_failures}",
+            f"last_error_popup_name: {self.last_error_popup_name}",
+            f"last_error_popup_button_name: {self.last_error_popup_button_name}",
             f"last_decision: {self.last_decision}",
             "last_adb_tap: "
             + (
@@ -382,6 +526,16 @@ class RunRecorder:
                     f"y={last_adb_tap.get('click_y')} "
                     f"confidence={last_adb_tap.get('confidence')} "
                     f"screenshot_path={last_adb_tap.get('screenshot_path')}"
+                )
+            ),
+            "last_adb_keyevent: "
+            + (
+                "none"
+                if not self.last_adb_keyevent
+                else (
+                    f"loop={self.last_adb_keyevent.get('loop')} "
+                    f"decision={self.last_adb_keyevent.get('decision')} "
+                    f"result={self.last_adb_keyevent.get('result')}"
                 )
             ),
             f"last_screenshot: {self.last_screenshot}",
@@ -398,12 +552,46 @@ class RunRecorder:
                     f"{self.last_delay.get('interrupted_by_stop_file')}"
                 )
             ),
+            "last_wait: "
+            + (
+                "none"
+                if not self.last_wait
+                else (
+                    f"name={self.last_wait.get('name')} "
+                    f"seconds={self.last_wait.get('seconds')} "
+                    f"status={self.last_wait.get('status')}"
+                )
+            ),
             f"stop_reason: {self.stop_reason}",
         ]
+        if self.diagnosis_text:
+            lines.extend(["", self.diagnosis_text.rstrip()])
         self.summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+    def update_latest(self) -> None:
+        if self.run_dir.parent.name != "runs":
+            return
+        latest_dir = self.run_dir.parent.parent / "latest"
+        latest_dir.mkdir(parents=True, exist_ok=True)
+        for source in (
+            self.summary_path,
+            self.diagnosis_path,
+            self.click_records_path,
+            self.events_path,
+            self.phase_journal_path,
+            self.log_path,
+        ):
+            if source.exists():
+                shutil.copy2(source, latest_dir / source.name)
+        (latest_dir / "run_id.txt").write_text(self.run_id + "\n", encoding="utf-8")
+
     def close(self) -> None:
-        for handle_name in ("_csv_handle", "_events_handle", "_log_handle"):
+        for handle_name in (
+            "_csv_handle",
+            "_events_handle",
+            "_phase_journal_handle",
+            "_log_handle",
+        ):
             handle = getattr(self, handle_name)
             if handle is not None:
                 handle.close()

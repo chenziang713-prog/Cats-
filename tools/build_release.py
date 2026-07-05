@@ -40,12 +40,12 @@ POWERED BY 神箭
 
 五、日志在哪里
 每次运行会生成一个 output\\runs\\<run_id>\\ 目录，里面包括：
-1. run.log
+1. logs\\run.log
 2. click_records.csv
 3. events.jsonl
 4. summary.txt
 5. screenshots\\
-6. debug\\
+6. state_results\\
 
 六、误点后看哪里
 1. 点击“打开 click_records”。
@@ -123,7 +123,92 @@ POWERED BY 神箭
 1. confirm_reward 成功执行时，cycle 正常完成。
 2. 如果看广告并关闭广告后直接返回主页，高置信度 ad_entry 也会完成 cycle。
 3. summary.txt 可查看 total_cycles_completed、last_cycle_completed_reason 和 next_cycle_scheduled_at。
+
+十七、废铁看广告
+1. 在 external_strategies\\scrap_ad_battle\\templates\\ 放入：scrap_entry.png、scrap_next_button.png、battle_button.png、skip_button.png、battle_result_popup.png、scrap_watch_ad_button.png。
+2. 游戏停在主页，GUI strategy 选择 scrap_ad_battle。
+3. 对战等待秒数默认 60，广告等待秒数默认 20。
+4. 先 Dry-run，确认 click_records.csv 坐标后再勾选 allow-click。
+5. 看不到 scrap_next_button 或 battle_button 时使用受保护 ADB BACK；识别 battle_result_popup 后再 BACK 一次。
+6. scrap_page_marker.png 是可选模板；battle_confirm_button.png 已退出主流程，不再加载，缺失时不会报警。
+7. 支持中途接管：主页、废铁页、对战按钮页、跳过页、结果弹窗页、看广告入口页都可启动。
+8. 每一步都会先按当前截图恢复进度状态，再执行对应动作；恢复记录写入 events.jsonl 的 state_recovered 事件。
+9. 关闭对战结果弹窗后会锁定到等待看广告按钮；同一 cycle 内不会再次点击 battle_button。
+10. scrap_watch_ad_button 提前出现时不会点击；必须完成对战、两次跳过、等待和结果弹窗关闭后才会解锁。
+11. GUI 可选择“废铁看广告 / scrap_ad_battle”，并设置对战等待秒数（默认 60）和广告等待秒数（默认 20）。
+12. 先点击“检查废铁模板”，确认 6 张模板完整，再运行“废铁一轮测试”。
+13. 一轮正常后可运行“废铁循环测试”；循环测试固定 cycle_wait_seconds=60、max_cycles=2。
+14. 长期运行建议 cycle_wait_seconds=1800、max_cycles=0。
+15. 阶段目标连续识别不到 3 次才会小退；第 1、2 次只等待并记录 waiting_for_miss_threshold。
+16. 每个阶段最多小退 3 次；已有两次 scrap_next_button 点击记录时，也必须累计 3 次 miss 才小退。广告关闭阶段只等待，不自动小退。
+17. 废铁阶段识别到 battle_result_popup 时优先处理：有 confirm_button 就点击确认，没有就 ADB BACK；不会进入 wait_close_ad_not_found。
+
+十八、废铁 + 胶卷广告完整流程
+1. GUI 选择“废铁 + 胶卷广告 (scrap_then_ad_reward)”，或点击“废铁+胶卷一轮测试”。
+2. 一轮依次执行：废铁对战、废铁看广告、返回主页、胶卷广告奖励。
+3. 废铁结束后连续 3 次未检测到主页才 ADB BACK；每次 BACK 后重新计数并检测主页。
+4. 最多回退 5 次；仍不到主页时记录 max_back_to_home_attempts_reached 并等待。
+5. 到主页后复用已有 ad_reward；胶卷广告完成后才记录 scrap_then_ad_reward_completed。
+6. “废铁+胶卷循环测试”默认 cycle_wait_seconds=60、max_cycles=2；长期运行可改为 1800 和 0。
+7. ad_entry 置信度低于 0.80 不算主页；battle_result_popup 未关闭前不会开始胶卷广告。
 """
+
+
+def copy_scrap_strategy_package(
+    repo_root: Path = REPO_ROOT,
+    release_dir: Path = RELEASE_DIR,
+) -> Path | None:
+    source = repo_root / "external_strategies" / "scrap_ad_battle"
+    if not source.exists():
+        return None
+    destination = release_dir / "external_strategies" / "scrap_ad_battle"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, destination, dirs_exist_ok=True)
+    return destination
+
+
+def copy_combined_strategy_package(
+    repo_root: Path = REPO_ROOT,
+    release_dir: Path = RELEASE_DIR,
+) -> Path | None:
+    source = repo_root / "external_strategies" / "scrap_then_ad_reward"
+    if not source.exists():
+        return None
+    destination = release_dir / "external_strategies" / "scrap_then_ad_reward"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, destination, dirs_exist_ok=True)
+    return destination
+
+
+def copy_user_templates(
+    repo_root: Path = REPO_ROOT,
+    release_dir: Path = RELEASE_DIR,
+) -> int:
+    source_root = repo_root / "user_templates"
+    destination_root = release_dir / "user_templates"
+    template_directories = (
+        "watch_buttons",
+        "close_buttons",
+        "pre_watch_optional",
+        "error_popups",
+        "error_buttons",
+        "scrap_watch_cooldown",
+    )
+    copied = 0
+    for directory_name in template_directories:
+        source = source_root / directory_name
+        destination = destination_root / directory_name
+        destination.mkdir(parents=True, exist_ok=True)
+        if not source.exists():
+            continue
+        for path in source.rglob("*"):
+            if not path.is_file() or path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".bmp", ".webp"}:
+                continue
+            target = destination / path.relative_to(source)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+            copied += 1
+    return copied
 
 
 def main() -> None:
@@ -179,7 +264,12 @@ def create_release() -> None:
     (RELEASE_DIR / "user_templates" / "close_buttons").mkdir(parents=True, exist_ok=True)
     (RELEASE_DIR / "user_templates" / "pre_watch_optional").mkdir(parents=True, exist_ok=True)
     (RELEASE_DIR / "user_templates" / "watch_buttons").mkdir(parents=True, exist_ok=True)
+    (RELEASE_DIR / "user_templates" / "error_popups").mkdir(parents=True, exist_ok=True)
+    (RELEASE_DIR / "user_templates" / "error_buttons").mkdir(parents=True, exist_ok=True)
     (RELEASE_DIR / "external_strategies").mkdir(parents=True, exist_ok=True)
+    copy_scrap_strategy_package()
+    copy_combined_strategy_package()
+    copy_user_templates()
     shutil.copy2(DIST_DIR / "CATSautomatic.exe", RELEASE_DIR / "CATSautomatic.exe")
     shutil.copy2(DIST_DIR / "CATSautomatic-cli.exe", RELEASE_DIR / "CATSautomatic-cli.exe")
     (RELEASE_DIR / "README使用说明.txt").write_text(README_TEXT, encoding="utf-8")

@@ -20,7 +20,7 @@ can stay stable while game-specific files move under `games/<game_name>/`.
 ## Completed Features
 
 - Command-line entrypoint with module execution support: `python -m cats_automatic.main`.
-- Compatibility wrapper: `python run_prototype.py`.
+- Legacy prototype wrapper archived at `archive/old_code/run_prototype.py`.
 - Strategy entrypoint: `--game cats --strategy ad_reward --max-loops 3`.
 - Capture backend selection: `--capture-backend fullscreen|window`.
 - JSON flow loading through `config_loader.py`.
@@ -61,9 +61,8 @@ can stay stable while game-specific files move under `games/<game_name>/`.
   -p` to capture a borderless emulator screenshot for dry-run strategy testing.
 - Guarded ADB action backend: real `adb shell input tap x y` is only available
   when `--allow-click` is combined with `--capture-backend adb`.
-- Ad playback waiting state: after `click_watch_ad_button`, `ad_reward` enters
-  `ad_waiting_after_watch` and only allows close, reward confirmation, or wait
-  decisions until reward confirmation exits the state.
+- Ad reward flow: after `click_watch_ad_button`, `ad_reward` continues normal
+  per-loop target recognition and priority handling.
 - Window capture backend interface and clear error handling.
 - Static strategy screenshot backend: `--game cats --strategy ad_reward --screen ...`
   runs against a fixed image and bypasses fullscreen/window capture.
@@ -142,8 +141,8 @@ can stay stable while game-specific files move under `games/<game_name>/`.
   depending on the emulator and compositor.
 - Default behavior is still dry-run. Replay, fullscreen, and window backends
   reject `--allow-click`; wait/unknown/undetected states do not tap.
-- During `ad_waiting_after_watch`, `ad_entry` and `watch_ad_button` detections
-  are ignored as click targets to avoid mis-clicks while an ad is playing.
+- After `click_watch_ad_button`, `ad_reward` continues normal per-loop target
+  recognition instead of suppressing `ad_entry` or `watch_ad_button`.
 
 ## Current Stable Small Feature
 

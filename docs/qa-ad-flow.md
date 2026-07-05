@@ -30,7 +30,7 @@ Edit `configs\qa-ad-flow.json` if the emulator tab title differs from `ANG`.
 Then run:
 
 ```powershell
-py run_prototype.py `
+py -m cats_automatic.main `
   --scenario configs\qa-ad-flow.json `
   --scenario-log-file output\qa-ad-flow.jsonl
 ```

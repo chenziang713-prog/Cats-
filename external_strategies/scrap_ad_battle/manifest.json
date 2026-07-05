@@ -1,0 +1,9 @@
+{
+  "strategy_name": "scrap_ad_battle",
+  "display_name": "废铁看广告",
+  "game": "cats",
+  "entry_class": "Strategy",
+  "description": "废铁对战后观看广告并循环返回主页",
+  "version": "1.1",
+  "templates_dir": "templates"
+}

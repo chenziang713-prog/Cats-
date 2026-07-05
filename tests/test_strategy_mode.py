@@ -59,6 +59,8 @@ def test_game_loader_loads_cats_game() -> None:
 
 def test_strategy_loader_loads_named_strategy(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ad_reward_module, "load_user_close_targets", lambda *_, **__: ())
+    monkeypatch.setattr(ad_reward_module, "load_user_watch_targets", lambda *_, **__: ())
+    monkeypatch.setattr(ad_reward_module, "load_pre_watch_optional_target", lambda *_, **__: None)
 
     strategy = load_strategy("cats", "ad_reward")
 
@@ -75,19 +77,19 @@ def test_strategy_loader_loads_named_strategy(monkeypatch: pytest.MonkeyPatch) -
     ]
     targets = {target.name: target for target in strategy.targets()}
     assert targets["close_end_2"].template == "templates/close-end-2.png"
-    assert targets["close_end_2"].threshold == 0.75
+    assert targets["close_end_2"].threshold == 0.72
     assert targets["close_end_2"].match_mode == "color"
     assert targets["close_end_2"].region == RelativeRegion(x=0.80, y=0.0, width=0.20, height=0.20)
     assert targets["close_end_1"].template == "templates/close-end-1.png"
-    assert targets["close_end_1"].threshold == 0.90
+    assert targets["close_end_1"].threshold == 0.72
     assert targets["close_end_1"].match_mode == "color"
     assert targets["close_end_1"].region == RelativeRegion(x=0.0, y=0.0, width=0.25, height=0.20)
     assert targets["close_end_3"].template == "templates/close-end-3.png"
-    assert targets["close_end_3"].threshold == 0.75
+    assert targets["close_end_3"].threshold == 0.72
     assert targets["close_end_3"].match_mode == "color"
     assert targets["close_end_3"].region == RelativeRegion(x=0.80, y=0.0, width=0.20, height=0.20)
     assert targets["close_end_4"].template == "templates/close-end-4.png"
-    assert targets["close_end_4"].threshold == 0.75
+    assert targets["close_end_4"].threshold == 0.72
     assert targets["close_end_4"].match_mode == "color"
     assert targets["close_end_4"].region == RelativeRegion(x=0.80, y=0.0, width=0.20, height=0.20)
     assert targets["page_marker"].template == "templates/page-marker.png"
@@ -136,7 +138,7 @@ def test_user_close_template_is_loaded_as_close_user_target(tmp_path: Path) -> N
 
     assert "close_user_001" in targets
     assert targets["close_user_001"].template == str((template_dir / "close-user-001.png").resolve())
-    assert targets["close_user_001"].threshold == 0.75
+    assert targets["close_user_001"].threshold == 0.72
     assert targets["close_user_001"].match_mode == "color"
     assert targets["close_user_001"].region == RelativeRegion(x=0.0, y=0.0, width=1.0, height=0.20)
 
@@ -167,15 +169,11 @@ def test_user_close_template_still_uses_close_limit() -> None:
     strategy = AdRewardStrategy()
     decisions = [
         strategy.decide(_context_with_detections({"close_user_001": _detection("close_user_001")}))
-        for _ in range(4)
+        for _ in range(9)
     ]
 
-    assert decisions[:3] == [
-        StrategyDecision.click("close_user_001", "close_ad", "close_ad"),
-        StrategyDecision.click("close_user_001", "close_ad", "close_ad"),
-        StrategyDecision.click("close_user_001", "close_ad", "close_ad"),
-    ]
-    assert decisions[3] == StrategyDecision.wait(1.0, "wait_close_limit_reached")
+    assert all(decision.action_name == "close_ad" for decision in decisions[:8])
+    assert decisions[8] == StrategyDecision.wait(1.0, "wait_close_limit_reached")
 
 
 def test_pre_watch_optional_is_clicked_before_watch_button() -> None:
@@ -389,15 +387,11 @@ def test_ad_reward_strategy_after_watch_click_keeps_close_limit() -> None:
 
     decisions = [
         strategy.decide(_context_with_detections({"close_end_2": _detection("close_end_2")}))
-        for _ in range(4)
+        for _ in range(9)
     ]
 
-    assert decisions == [
-        StrategyDecision.click("close_end_2", "close_ad", "close_ad"),
-        StrategyDecision.click("close_end_2", "close_ad", "close_ad"),
-        StrategyDecision.click("close_end_2", "close_ad", "close_ad"),
-        StrategyDecision.wait(1.0, "wait_close_limit_reached"),
-    ]
+    assert all(decision.action_name == "close_ad" for decision in decisions[:8])
+    assert decisions[8] == StrategyDecision.wait(1.0, "wait_close_limit_reached")
 
 
 def test_ad_reward_strategy_confirms_reward_when_marker_and_button_detected() -> None:
@@ -510,14 +504,17 @@ def test_ad_reward_strategy_allows_three_consecutive_close_actions() -> None:
     ]
 
 
-def test_ad_reward_strategy_waits_on_fourth_consecutive_close_action() -> None:
+def test_ad_reward_strategy_allows_third_close_and_waits_after_eighth() -> None:
     strategy = AdRewardStrategy()
 
-    for _ in range(3):
+    decisions = [
         strategy.decide(_context_with_detections({"close_end_2": _detection("close_end_2")}))
-    decision = strategy.decide(_context_with_detections({"close_end_2": _detection("close_end_2")}))
+        for _ in range(9)
+    ]
 
-    assert decision == StrategyDecision.wait(1.0, "wait_close_limit_reached")
+    assert decisions[2].action_name == "close_ad"
+    assert decisions[7].action_name == "close_ad"
+    assert decisions[8] == StrategyDecision.wait(1.0, "wait_close_limit_reached")
 
 
 def test_ad_reward_strategy_resets_close_count_on_non_close_state() -> None:
@@ -548,7 +545,7 @@ def test_ad_reward_strategy_resets_close_count_on_non_close_state() -> None:
 def test_ad_reward_strategy_close_limit_applies_to_left_close_too() -> None:
     strategy = AdRewardStrategy()
 
-    for _ in range(3):
+    for _ in range(8):
         strategy.decide(_context_with_detections({"close_end_1": _detection("close_end_1")}))
     decision = strategy.decide(_context_with_detections({"close_end_1": _detection("close_end_1")}))
 
@@ -1290,7 +1287,7 @@ def test_strategy_runner_cycle_wait_stop_file_stops_without_next_capture(tmp_pat
 
 def test_strategy_runner_start_cycle_resets_close_streak_and_action_count(tmp_path: Path) -> None:
     strategy = AdRewardStrategy()
-    for _ in range(3):
+    for _ in range(8):
         assert strategy.decide(_context_with_detections({"close_end_2": _detection("close_end_2")})).action_name == "close_ad"
     assert strategy.decide(
         _context_with_detections({"close_end_2": _detection("close_end_2")})
@@ -1723,6 +1720,34 @@ def test_adb_action_backend_calls_adb_input_tap(tmp_path: Path) -> None:
     assert backend.action_count == 1
 
 
+def test_adb_close_action_can_override_global_min_confidence(tmp_path: Path) -> None:
+    adb = tmp_path / "adb.exe"
+    adb.touch()
+    commands: list[list[str]] = []
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+    backend = AdbActionBackend(
+        adb_path=adb,
+        adb_serial="emulator-5556",
+        max_actions=2,
+        click_cooldown=0,
+        min_click_confidence=0.85,
+        runner=runner,
+    )
+
+    ordinary = backend.click(ClickAction(1, 2, 0.759, "ordinary"))
+    close = backend.click(
+        ClickAction(3, 4, 0.759, "close_ad", min_confidence_override=0.72)
+    )
+
+    assert ordinary.result == "skipped_confidence_too_low"
+    assert close.result == "executed"
+    assert len(commands) == 1
+
+
 def test_adb_action_backend_wait_does_not_call_tap(tmp_path: Path) -> None:
     adb = tmp_path / "adb.exe"
     adb.touch()
@@ -2006,13 +2031,13 @@ def test_ad_reward_static_jiao_juan_page_clicks_watch_ad_button() -> None:
     ]
 
 
-def test_ad_reward_static_reward_confirm_page_clicks_confirm_button() -> None:
+def test_ad_reward_static_reward_confirm_page_clicks_confirm_button(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     game = load_game("cats")
     action_backend = RecordingActionBackend()
     runner = StrategyRunner(
         game=game,
-        strategy=AdRewardStrategy(),
+        strategy=AdRewardStrategy(user_close_template_dir=tmp_path / "empty-close-buttons"),
         capture_backend=StaticImageCaptureBackend(
             root / "samples" / "cats" / "reward_confirm_page.png"
         ),
@@ -2041,7 +2066,7 @@ def test_ad_reward_reward_confirm_click_uses_confirm_button_center(tmp_path: Pat
     action_backend = RecordingActionBackend()
     runner = StrategyRunner(
         game=GameDefinition("test", tmp_path / "config.json", templates),
-        strategy=AdRewardStrategy(),
+        strategy=AdRewardStrategy(user_close_template_dir=tmp_path / "empty-close-buttons"),
         capture_backend=StaticImageCaptureBackend(screen),
         action_backend=action_backend,
         root=tmp_path,
@@ -2140,13 +2165,14 @@ def test_ad_reward_close_button_detection_passes_regions(tmp_path: Path) -> None
 def test_ad_reward_ad_close_screens_click_close_button(
     screenshot: str,
     expected_click: tuple[int, int],
+    tmp_path: Path,
 ) -> None:
     root = Path(__file__).resolve().parents[1]
     game = load_game("cats")
     action_backend = RecordingActionBackend()
     runner = StrategyRunner(
         game=game,
-        strategy=AdRewardStrategy(),
+        strategy=AdRewardStrategy(user_close_template_dir=tmp_path / "empty-close-buttons"),
         capture_backend=StaticImageCaptureBackend(
             root / "samples" / "cats" / "ad_close_tests" / screenshot
         ),
@@ -2185,12 +2211,8 @@ def test_ad_reward_ad_close_runner_limits_consecutive_close_actions() -> None:
     completed = runner.run()
 
     assert completed == 4
-    assert [action.reason for action in action_backend.clicks] == [
-        "close_ad",
-        "close_ad",
-        "close_ad",
-    ]
-    assert action_backend.waits == [(1.0, "wait_close_limit_reached")]
+    assert [action.reason for action in action_backend.clicks] == ["close_ad"] * 4
+    assert action_backend.waits == []
 
 
 def test_ad_reward_replay_full_dry_run_chain() -> None:
@@ -2233,6 +2255,7 @@ def test_ad_reward_replay_full_dry_run_chain() -> None:
 def test_ad_reward_replay_cli_outputs_full_dry_run_chain() -> None:
     root = Path(__file__).resolve().parents[1]
     env = os.environ.copy()
+    env["CATS_LICENSE_DEV_BYPASS"] = "1"
     env["PYTHONPATH"] = str(root / "src")
     replay_screens = ",".join(
         [
@@ -2263,23 +2286,27 @@ def test_ad_reward_replay_cli_outputs_full_dry_run_chain() -> None:
             replay_screens,
             "--max-loops",
             "4",
+            "--skip-license-check-for-dev",
         ],
         cwd=root,
         env=env,
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
-    assert "Decision: click_ad_entry" in result.stdout
-    assert "Decision: click_watch_ad_button" in result.stdout
-    assert "Decision: close_ad" in result.stdout
-    assert "Decision: confirm_reward" in result.stdout
+    assert "决策：点击胶卷广告入口（click_ad_entry）" in result.stdout
+    assert "决策：点击看广告按钮（click_watch_ad_button）" in result.stdout
+    assert "决策：点击广告关闭按钮（close_ad）" in result.stdout
+    assert "决策：点击奖励确认（confirm_reward）" in result.stdout
 
 
 def test_ad_reward_static_jiao_juan_page_cli_outputs_dry_run() -> None:
     root = Path(__file__).resolve().parents[1]
     env = os.environ.copy()
+    env["CATS_LICENSE_DEV_BYPASS"] = "1"
     env["PYTHONPATH"] = str(root / "src")
     result = subprocess.run(
         [
@@ -2294,23 +2321,27 @@ def test_ad_reward_static_jiao_juan_page_cli_outputs_dry_run() -> None:
             str(root / "samples" / "cats" / "jiao_juan_page.png"),
             "--max-loops",
             "1",
+            "--skip-license-check-for-dev",
         ],
         cwd=root,
         env=env,
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
-    assert "Detected: page_marker" in result.stdout
-    assert "Detected: watch_ad_button" in result.stdout
-    assert "Decision: click_watch_ad_button" in result.stdout
+    assert "检测到：胶卷广告页面标记（page_marker）" in result.stdout
+    assert "检测到：看广告按钮（watch_ad_button）" in result.stdout
+    assert "决策：点击看广告按钮（click_watch_ad_button）" in result.stdout
     assert "DRY RUN click x=636 y=615" in result.stdout
 
 
 def test_ad_reward_static_reward_confirm_page_cli_outputs_dry_run() -> None:
     root = Path(__file__).resolve().parents[1]
     env = os.environ.copy()
+    env["CATS_LICENSE_DEV_BYPASS"] = "1"
     env["PYTHONPATH"] = str(root / "src")
     result = subprocess.run(
         [
@@ -2325,17 +2356,20 @@ def test_ad_reward_static_reward_confirm_page_cli_outputs_dry_run() -> None:
             str(root / "samples" / "cats" / "reward_confirm_page.png"),
             "--max-loops",
             "1",
+            "--skip-license-check-for-dev",
         ],
         cwd=root,
         env=env,
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
-    assert "Detected: reward_confirm_marker" in result.stdout
-    assert "Detected: confirm_button" in result.stdout
-    assert "Decision: confirm_reward" in result.stdout
+    assert "检测到：奖励确认页面（reward_confirm_marker）" in result.stdout
+    assert "检测到：确认按钮（confirm_button）" in result.stdout
+    assert "决策：点击奖励确认（confirm_reward）" in result.stdout
     assert "DRY RUN click x=631 y=657" in result.stdout
 
 

@@ -39,7 +39,7 @@ python -m venv .venv
 pip install -r requirements.txt
 pip install -e .
 python tools\check_environment.py
-python tools\self_test.py
+python -m pytest tests\test_clean_output.py tests\test_vision.py
 python -m cats_automatic.main
 ```
 

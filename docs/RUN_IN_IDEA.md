@@ -39,8 +39,8 @@ Python interpreter: C:\Users\shenj\Documents\CATSautomatic\.venv\Scripts\python.
 The working directory should be the project root, not `src`. The configs,
 templates, samples, and output paths are resolved from the project root.
 
-`Script path` can run `run_prototype.py` because that wrapper adds `src` to
-`sys.path`, but `Module name` is the cleaner package-layout option.
+The old `run_prototype.py` wrapper has been archived under `archive/old_code`.
+Use `Module name` for the current package-layout option.
 
 ## Why Direct main.py Can Fail
 
@@ -62,12 +62,6 @@ After activating `.venv` and installing the package:
 
 ```powershell
 python -m cats_automatic.main
-```
-
-The compatibility wrapper also works:
-
-```powershell
-python run_prototype.py
 ```
 
 ## Strategy Run Configuration

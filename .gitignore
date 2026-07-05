@@ -12,4 +12,12 @@ build/
 *.egg-info/
 output/
 captures/
+logs/
 *.log
+.env
+.env.*
+*.tmp.png
+*-current.png
+watch-screen.png
+CATSautomatic-release*/
+CATSautomatic-release*.zip

@@ -12,6 +12,8 @@ from .strategy_base import RelativeRegion, TargetSpec
 
 
 USER_CLOSE_TEMPLATE_PATTERN = re.compile(r"^close-user-(\d+)\.png$", re.IGNORECASE)
+CLOSE_AD_MIN_CONFIDENCE = 0.72
+CLOSE_AD_CANDIDATE_THRESHOLD = 0.60
 
 
 def user_close_target_name(path: Path) -> str:
@@ -28,6 +30,7 @@ def load_user_close_targets(
     template_dir: Path | None = None,
     *,
     log: Callable[[str], None] | None = None,
+    threshold: float = 0.75,
 ) -> tuple[TargetSpec, ...]:
     directory = template_dir or close_button_templates_dir()
     directory.mkdir(parents=True, exist_ok=True)
@@ -41,7 +44,7 @@ def load_user_close_targets(
                 TargetSpec(
                     name=name,
                     template=str(path.resolve()),
-                    threshold=0.75,
+                    threshold=threshold,
                     match_mode="color",
                     region=RelativeRegion(x=0.0, y=0.0, width=1.0, height=0.20),
                     scale_min=0.4,

@@ -16,6 +16,7 @@ class ClickAction:
     y: int
     confidence: float
     reason: str
+    min_confidence_override: float | None = None
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,7 @@ class TapAction:
     y: int
     confidence: float
     reason: str
+    min_confidence_override: float | None = None
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,8 @@ class ActionBackend(Protocol):
     def tap(self, action: TapAction) -> ActionResult: ...
 
     def wait(self, seconds: float, reason: str = "") -> ActionResult: ...
+
+    def keyevent(self, keycode: str, reason: str = "") -> ActionResult: ...
 
     def reset_cycle(self) -> None: ...
 
@@ -84,6 +88,14 @@ class DryRunBackend:
     def wait(self, seconds: float, reason: str = "") -> ActionResult:
         self._emit(f"DRY RUN wait seconds={seconds:.2f} reason={reason}")
         return ActionResult("wait", "skipped_wait", reason)
+
+    def keyevent(self, keycode: str, reason: str = "") -> ActionResult:
+        if self.max_actions is not None and self.action_count >= self.max_actions:
+            self._emit(f"Max actions reached ({self.max_actions}), skipping dry-run keyevent.")
+            return ActionResult("dry_run_keyevent", "skipped_max_actions_reached", reason)
+        self.action_count += 1
+        self._emit(f"DRY RUN keyevent keycode={keycode} reason={reason}")
+        return ActionResult("dry_run_keyevent", "executed", reason)
 
     def reset_cycle(self) -> None:
         self.action_count = 0
@@ -150,10 +162,15 @@ class AdbActionBackend:
         if self.stop_file is not None and self.stop_file.exists():
             self._emit(f"STOP file present, skipping ADB tap: {self.stop_file}")
             return ActionResult("adb_tap", "skipped_stop_file", action.reason)
-        if action.confidence < self.min_click_confidence:
+        min_confidence = (
+            self.min_click_confidence
+            if action.min_confidence_override is None
+            else action.min_confidence_override
+        )
+        if action.confidence < min_confidence:
             self._emit(
                 "Confidence too low for ADB tap "
-                f"confidence={action.confidence:.3f} min={self.min_click_confidence:.3f}"
+                f"confidence={action.confidence:.3f} min={min_confidence:.3f}"
             )
             return ActionResult(
                 "adb_tap",
@@ -204,12 +221,48 @@ class AdbActionBackend:
                 y=action.y,
                 confidence=action.confidence,
                 reason=action.reason,
+                min_confidence_override=action.min_confidence_override,
             )
         )
 
     def wait(self, seconds: float, reason: str = "") -> ActionResult:
         self._emit(f"ADB wait seconds={seconds:.2f} reason={reason}")
         return ActionResult("wait", "skipped_wait", reason)
+
+    def keyevent(self, keycode: str, reason: str = "") -> ActionResult:
+        if self.stop_file is not None and self.stop_file.exists():
+            self._emit(f"STOP file present, skipping ADB keyevent: {self.stop_file}")
+            return ActionResult("adb_keyevent", "skipped_stop_file", reason)
+        if self.action_count >= self.max_actions:
+            self._emit(f"Max actions reached ({self.max_actions}), skipping ADB keyevent.")
+            return ActionResult("adb_keyevent", "skipped_max_actions_reached", reason)
+
+        now = time.monotonic()
+        elapsed = now - self.last_click_at
+        if self.action_count > 0 and elapsed < self.click_cooldown:
+            wait_seconds = self.click_cooldown - elapsed
+            self._emit(f"Waiting {wait_seconds:.2f}s for action cooldown.")
+            self.sleep(wait_seconds)
+            now = time.monotonic()
+
+        command = [
+            str(self.adb_path),
+            "-s",
+            self.adb_serial,
+            "shell",
+            "input",
+            "keyevent",
+            keycode,
+        ]
+        result = self._run(command)
+        if result.returncode != 0:
+            self._emit(f"ADB keyevent failed: {_decode_output(result.stderr) or result.returncode}")
+            return ActionResult("adb_keyevent", "adb_keyevent_failed", reason)
+
+        self.action_count += 1
+        self.last_click_at = now
+        self._emit(f"ADB keyevent keycode={keycode} reason={reason}")
+        return ActionResult("adb_keyevent", "executed", reason)
 
     def reset_cycle(self) -> None:
         self.action_count = 0

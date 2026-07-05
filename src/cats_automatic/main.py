@@ -15,6 +15,14 @@ from .backends import (
 from .config_loader import load_flow
 from .external_strategy_loader import list_available_strategies
 from .game_loader import GameLoadError, load_game, load_strategy
+from .license_client import (
+    DEFAULT_LICENSE_SERVER_URL,
+    LicenseClient,
+    LicenseResult,
+    authorize_strategy,
+    license_cache_path,
+    mask_license_key,
+)
 from .rules import RuleEngine
 from .runner import run_match_once, run_watch
 from .run_recording import RunRecorder
@@ -186,6 +194,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum reward cycles in repeat mode. 0 means unlimited.",
     )
     parser.add_argument(
+        "--battle-wait-seconds",
+        type=float,
+        default=60.0,
+        help="Seconds to wait after scrap battle skips before confirmation. Defaults to 60.",
+    )
+    parser.add_argument(
+        "--ad-wait-seconds",
+        type=float,
+        default=20.0,
+        help="Seconds to wait after the scrap watch-ad click before closing the ad. Defaults to 20.",
+    )
+    parser.add_argument(
         "--capture-backend",
         choices=["fullscreen", "window", "replay", "adb"],
         default="fullscreen",
@@ -239,10 +259,28 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Save each strategy capture for debugging. Multi-loop runs add a loop suffix.",
     )
+    parser.add_argument(
+        "--license-key",
+        default=None,
+        help="Activate a license key before starting strategy mode.",
+    )
+    parser.add_argument(
+        "--license-server-url",
+        default=DEFAULT_LICENSE_SERVER_URL,
+        help="License server base URL. Defaults to the local demo server.",
+    )
+    parser.add_argument(
+        "--skip-license-check-for-dev",
+        action="store_true",
+        help="Development-only bypass; also requires CATS_LICENSE_DEV_BYPASS=1.",
+    )
     return parser
 
 
 def main() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     root = runtime_root()
     args = build_parser().parse_args()
     if args.list_windows:
@@ -414,11 +452,35 @@ def build_strategy_capture_backend(args: argparse.Namespace):
 
 
 def run_strategy_mode(args: argparse.Namespace, root: Path) -> None:
+    license_result, license_client = authorize_strategy_run(args, root)
+    if not license_result.ok:
+        recorder = RunRecorder(
+            output_root=root / "output" / "runs",
+            capture_backend="license_check",
+            adb_serial=args.adb_serial or "",
+            max_actions_limit=strategy_max_actions(args),
+            min_click_confidence=args.min_click_confidence,
+            strategy_name=args.strategy or "ad_reward",
+        )
+        _record_initial_license_result(recorder, license_result, args)
+        recorder.finish("license_failed")
+        raise SystemExit(f"授权失败：{license_result.message}")
+    cache = license_result.cache
+    masked_key = "" if cache is None else mask_license_key(cache.license_key)
+    print(
+        f"授权通过：状态={license_result.status} 卡密={masked_key or '开发绕过'} "
+        f"功能={','.join(cache.features) if cache is not None else ''}"
+    )
     try:
         game = load_game(args.game)
         strategy = load_strategy(args.game, args.strategy)
+        if hasattr(strategy, "configure"):
+            strategy.configure(
+                battle_wait_seconds=args.battle_wait_seconds,
+                ad_wait_seconds=args.ad_wait_seconds,
+            )
         capture_backend = build_strategy_capture_backend(args)
-    except (GameLoadError, CaptureBackendError) as exc:
+    except (GameLoadError, CaptureBackendError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
 
     print(f"Loaded game: {game.name}")
@@ -434,7 +496,18 @@ def run_strategy_mode(args: argparse.Namespace, root: Path) -> None:
         repeat_after_reward=args.repeat_after_reward,
         cycle_wait_seconds=args.cycle_wait_seconds,
         max_cycles=args.max_cycles,
+        strategy_name=args.strategy or "default",
+        battle_wait_seconds=args.battle_wait_seconds,
+        ad_wait_seconds=args.ad_wait_seconds,
     )
+    print_strategy_startup(
+        root=root,
+        output_root=root / "output",
+        recorder=recorder,
+        strategy_name=args.strategy or "default",
+        dry_run=not args.allow_click,
+    )
+    _record_initial_license_result(recorder, license_result, args)
     try:
         action_backend = build_strategy_action_backend(args)
     except (CaptureBackendError, ValueError) as exc:
@@ -457,6 +530,11 @@ def run_strategy_mode(args: argparse.Namespace, root: Path) -> None:
             repeat_after_reward=args.repeat_after_reward,
             cycle_wait_seconds=args.cycle_wait_seconds,
             max_cycles=args.max_cycles,
+            license_heartbeat=(
+                None
+                if license_result.status == "dev_bypass"
+                else license_client.heartbeat
+            ),
         )
         runner.run()
     except Exception as exc:
@@ -468,7 +546,84 @@ def run_strategy_mode(args: argparse.Namespace, root: Path) -> None:
         print_run_record_summary(summary)
 
 
+def authorize_strategy_run(
+    args: argparse.Namespace,
+    root: Path,
+    *,
+    client: LicenseClient | None = None,
+) -> tuple[LicenseResult, LicenseClient]:
+    cache_path = license_cache_path(root)
+    active_client = client or LicenseClient(
+        server_url=args.license_server_url,
+        cache_path=cache_path,
+    )
+    if args.strategy == "minimal_dry_run":
+        return LicenseResult(
+            True,
+            "minimal_dry_run",
+            "minimal dry-run strategy skips license check",
+            event="license_minimal_dry_run_bypass",
+        ), active_client
+    result = authorize_strategy(
+        strategy=args.strategy or "ad_reward",
+        license_key=args.license_key,
+        server_url=args.license_server_url,
+        cache_path=cache_path,
+        skip_for_dev=args.skip_license_check_for_dev,
+        client=active_client,
+    )
+    return result, active_client
+
+
+def print_strategy_startup(
+    *,
+    root: Path,
+    output_root: Path,
+    recorder: RunRecorder,
+    strategy_name: str,
+    dry_run: bool,
+) -> None:
+    print(f"project_root: {root}")
+    print(f"output_root: {output_root}")
+    print(f"run_id: {recorder.run_id}")
+    print(f"run_dir: {recorder.run_dir}")
+    print(f"screenshots_dir: {recorder.screenshots_dir}")
+    print(f"events_path: {recorder.events_path}")
+    print(f"summary_path: {recorder.summary_path}")
+    print(f"strategy_name: {strategy_name}")
+    print(f"dry_run: {str(dry_run).lower()}")
+
+
+def _record_initial_license_result(
+    recorder: RunRecorder,
+    result: LicenseResult,
+    args: argparse.Namespace,
+) -> None:
+    cache = result.cache
+    masked_key = (
+        mask_license_key(args.license_key)
+        if args.license_key
+        else "" if cache is None else mask_license_key(cache.license_key)
+    )
+    recorder.event(
+        "license_activate_attempt" if args.license_key else "license_cache_loaded",
+        license_key_masked=masked_key,
+        server_url=args.license_server_url,
+    )
+    recorder.record_license_status(
+        event_type=result.event,
+        status=result.status,
+        license_key_masked=masked_key,
+        expires_at=("" if cache is None else cache.expires_at),
+        features=(() if cache is None else cache.features),
+        error=result.error,
+        message=result.message,
+    )
+
+
 def build_strategy_action_backend(args: argparse.Namespace) -> ActionBackend:
+    if args.strategy == "minimal_dry_run":
+        return DryRunBackend(log_file=args.log_file, max_actions=strategy_max_actions(args))
     if not args.allow_click:
         return DryRunBackend(log_file=args.log_file, max_actions=strategy_max_actions(args))
     if args.capture_backend != "adb":

@@ -1,0 +1,9 @@
+{
+  "strategy_name": "minimal_dry_run",
+  "display_name": "Minimal Dry Run",
+  "game": "cats",
+  "entry_class": "Strategy",
+  "description": "Minimal dry-run step/state/action flow verifier.",
+  "version": "0.1.0",
+  "templates_dir": "templates"
+}

@@ -46,6 +46,7 @@ class TargetSpec:
     scale_min: float = 1.0
     scale_max: float = 1.0
     scale_step: float = 0.1
+    optional: bool = False
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,7 @@ class StrategyDecision:
     wait_seconds: float = 0.0
     reason: str = ""
     post_action_delay_seconds: float = field(default=0.0, compare=False)
+    min_click_confidence_override: float | None = field(default=None, compare=False)
 
     @classmethod
     def click(
@@ -76,6 +78,7 @@ class StrategyDecision:
         action_name: str,
         reason: str = "",
         post_action_delay_seconds: float = 0.0,
+        min_click_confidence_override: float | None = None,
     ) -> "StrategyDecision":
         return cls(
             kind="click",
@@ -83,6 +86,7 @@ class StrategyDecision:
             action_name=action_name,
             reason=reason,
             post_action_delay_seconds=post_action_delay_seconds,
+            min_click_confidence_override=min_click_confidence_override,
         )
 
     @classmethod
@@ -92,6 +96,7 @@ class StrategyDecision:
         action_name: str,
         reason: str = "",
         post_action_delay_seconds: float = 0.0,
+        min_click_confidence_override: float | None = None,
     ) -> "StrategyDecision":
         return cls(
             kind="tap",
@@ -99,15 +104,46 @@ class StrategyDecision:
             action_name=action_name,
             reason=reason,
             post_action_delay_seconds=post_action_delay_seconds,
+            min_click_confidence_override=min_click_confidence_override,
         )
 
     @classmethod
-    def wait(cls, seconds: float = 1.0, reason: str = "") -> "StrategyDecision":
-        return cls(kind="wait", wait_seconds=seconds, reason=reason)
+    def wait(
+        cls,
+        seconds: float = 1.0,
+        reason: str = "",
+        target_name: str | None = None,
+    ) -> "StrategyDecision":
+        return cls(
+            kind="wait",
+            target_name=target_name,
+            wait_seconds=seconds,
+            reason=reason,
+        )
 
     @classmethod
     def stop(cls, reason: str = "") -> "StrategyDecision":
         return cls(kind="stop", reason=reason)
+
+    @classmethod
+    def keyevent(
+        cls,
+        keycode: str,
+        action_name: str,
+        reason: str = "",
+        post_action_delay_seconds: float = 0.0,
+    ) -> "StrategyDecision":
+        return cls(
+            kind="keyevent",
+            target_name="adb_back" if keycode.upper() == "BACK" else keycode,
+            action_name=action_name,
+            reason=reason,
+            post_action_delay_seconds=post_action_delay_seconds,
+        )
+
+    @classmethod
+    def complete(cls, reason: str) -> "StrategyDecision":
+        return cls(kind="complete", action_name="cycle_completed", reason=reason)
 
 
 @dataclass(frozen=True)

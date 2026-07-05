@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+# 旧版胶卷广告奖励策略逻辑，已废弃为 legacy 入口。
+# 保留原因：方便对比、回退和查看旧行为。
+# 新逻辑请使用 external_strategies/scrap_then_ad_reward_v2 下的
+# screen_state_detector / state_action_templates / strategy。
+
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -8,7 +13,7 @@ from ....user_ad_reward_templates import (
     load_pre_watch_optional_target,
     load_user_watch_targets,
 )
-from ....user_close_templates import load_user_close_targets
+from ....user_close_templates import CLOSE_AD_MIN_CONFIDENCE, load_user_close_targets
 from ....strategy_base import RelativeRegion, StrategyContext, StrategyDecision, TargetSpec
 
 
@@ -26,7 +31,7 @@ POST_ACTION_DELAYS = {
 class Strategy:
     def __init__(
         self,
-        max_consecutive_close_actions: int = 3,
+        max_consecutive_close_actions: int = 8,
         user_close_template_dir: Path | None = None,
         pre_watch_optional_template_dir: Path | None = None,
         user_watch_template_dir: Path | None = None,
@@ -37,6 +42,7 @@ class Strategy:
         self.pre_watch_optional_template_dir = pre_watch_optional_template_dir
         self.user_watch_template_dir = user_watch_template_dir
         self._pre_watch_optional_clicked = False
+        self._pending_strategy_events: list[dict[str, object]] = []
 
     def targets(self) -> Sequence[TargetSpec]:
         return (
@@ -99,7 +105,7 @@ class Strategy:
             TargetSpec(
                 name="close_end_2",
                 template="templates/close-end-2.png",
-                threshold=0.75,
+                threshold=CLOSE_AD_MIN_CONFIDENCE,
                 match_mode="color",
                 region=RelativeRegion(x=0.80, y=0.0, width=0.20, height=0.20),
                 scale_min=0.4,
@@ -109,7 +115,7 @@ class Strategy:
             TargetSpec(
                 name="close_end_1",
                 template="templates/close-end-1.png",
-                threshold=0.90,
+                threshold=CLOSE_AD_MIN_CONFIDENCE,
                 match_mode="color",
                 region=RelativeRegion(x=0.0, y=0.0, width=0.25, height=0.20),
                 scale_min=0.4,
@@ -119,7 +125,7 @@ class Strategy:
             TargetSpec(
                 name="close_end_3",
                 template="templates/close-end-3.png",
-                threshold=0.75,
+                threshold=CLOSE_AD_MIN_CONFIDENCE,
                 match_mode="color",
                 region=RelativeRegion(x=0.80, y=0.0, width=0.20, height=0.20),
                 scale_min=0.4,
@@ -129,20 +135,49 @@ class Strategy:
             TargetSpec(
                 name="close_end_4",
                 template="templates/close-end-4.png",
-                threshold=0.75,
+                threshold=CLOSE_AD_MIN_CONFIDENCE,
                 match_mode="color",
                 region=RelativeRegion(x=0.80, y=0.0, width=0.20, height=0.20),
                 scale_min=0.4,
                 scale_max=1.1,
                 scale_step=0.05,
             ),
-            *load_user_close_targets(self.user_close_template_dir, log=print),
+            *load_user_close_targets(
+                self.user_close_template_dir,
+                log=print,
+                threshold=CLOSE_AD_MIN_CONFIDENCE,
+            ),
         )
 
     def decide(self, context: StrategyContext) -> StrategyDecision:
-        close_target_name = self._best_close_target(context)
-        if close_target_name is not None:
-            return self._close_or_wait(close_target_name)
+        # DEPRECATED: 旧版执行逻辑，不再作为新策略主入口。
+        # 后续新策略应通过“状态识别 -> 状态动作 -> 流程控制”的方式执行。
+        close_detection = self._best_close_detection(context)
+        if close_detection is not None:
+            will_click = close_detection.confidence >= CLOSE_AD_MIN_CONFIDENCE
+            self._pending_strategy_events.append(
+                {
+                    "event": "close_ad_candidate",
+                    "target_name": close_detection.name,
+                    "confidence": close_detection.confidence,
+                    "center": list(close_detection.center),
+                    "threshold": CLOSE_AD_MIN_CONFIDENCE,
+                    "ad_stage_active": True,
+                    "will_click": will_click,
+                    "reason": (
+                        "close_ad_candidate_above_threshold"
+                        if will_click
+                        else "close_ad_candidate_below_threshold"
+                    ),
+                }
+            )
+            if not will_click:
+                return StrategyDecision.wait(
+                    1.0,
+                    "close_ad_candidate_below_threshold_after_ad_wait",
+                    target_name=close_detection.name,
+                )
+            return self._close_or_wait(close_detection.name)
 
         self._reset_close_limit()
         if "reward_confirm_marker" in context.detections:
@@ -189,6 +224,7 @@ class Strategy:
             "close_ad",
             "close_ad",
             post_action_delay_seconds=POST_ACTION_DELAYS["close_ad"],
+            min_click_confidence_override=CLOSE_AD_MIN_CONFIDENCE,
         )
 
     def _reset_close_limit(self) -> None:
@@ -197,6 +233,12 @@ class Strategy:
     def reset_cycle(self) -> None:
         self._reset_close_limit()
         self._pre_watch_optional_clicked = False
+        self._pending_strategy_events = []
+
+    def consume_strategy_events(self) -> list[dict[str, object]]:
+        events = self._pending_strategy_events
+        self._pending_strategy_events = []
+        return events
 
     def on_action_result(self, decision: StrategyDecision, action_result: ActionResult) -> None:
         if (
@@ -206,6 +248,10 @@ class Strategy:
             self._pre_watch_optional_clicked = True
 
     def _best_close_target(self, context: StrategyContext) -> str | None:
+        detection = self._best_close_detection(context)
+        return None if detection is None else detection.name
+
+    def _best_close_detection(self, context: StrategyContext):
         close_detections = [
             detection
             for name, detection in context.detections.items()
@@ -213,7 +259,7 @@ class Strategy:
         ]
         if not close_detections:
             return None
-        return max(close_detections, key=lambda detection: detection.confidence).name
+        return max(close_detections, key=lambda detection: detection.confidence)
 
     def _best_watch_target(self, context: StrategyContext) -> str | None:
         watch_detections = [

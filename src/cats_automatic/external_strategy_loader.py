@@ -205,6 +205,17 @@ class ExternalStrategyAdapter:
     def decide(self, context: StrategyContext) -> StrategyDecision:
         return self.strategy.decide(context)
 
+    def __getattr__(self, name: str):
+        return getattr(self.strategy, name)
+
+    @property
+    def state(self):
+        return getattr(self.strategy, "state", None)
+
+    @state.setter
+    def state(self, value) -> None:
+        setattr(self.strategy, "state", value)
+
     def _resolve_target(self, target: TargetSpec) -> TargetSpec:
         template_path = Path(target.template)
         if template_path.is_absolute():

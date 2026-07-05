@@ -1,0 +1,14 @@
+{
+  "license_key": "CATS-DEV-FULL-ACCESS",
+  "device_id": "64bf241e485789458158e41a513b15e9c4fa9e9e5c7c3ba730764b46b68eb2b9",
+  "token": "local-dev-token",
+  "features": [
+    "ad_reward",
+    "scrap_ad_battle",
+    "scrap_then_ad_reward"
+  ],
+  "expires_at": "2099-12-31T23:59:59+00:00",
+  "token_expires_at": "2099-12-31T23:59:59+00:00",
+  "server_url": "http://127.0.0.1:8000",
+  "last_heartbeat_at": "2026-06-20T14:23:07+00:00"
+}

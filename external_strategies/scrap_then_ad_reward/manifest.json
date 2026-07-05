@@ -1,0 +1,9 @@
+{
+  "strategy_name": "scrap_then_ad_reward",
+  "display_name": "废铁 + 胶卷广告",
+  "game": "cats",
+  "entry_class": "Strategy",
+  "description": "完成废铁看广告后返回主页，再执行胶卷广告奖励",
+  "version": "1.0",
+  "templates_dir": "templates"
+}

@@ -5,6 +5,7 @@ from pathlib import Path
 from types import ModuleType
 
 from .game_base import GameDefinition
+from .external_strategy_loader import find_external_strategy, load_external_strategy
 from .strategy_base import StrategyProtocol
 
 
@@ -26,6 +27,19 @@ def load_game(game_name: str) -> GameDefinition:
 
 
 def load_strategy(game_name: str, strategy_name: str | None) -> StrategyProtocol:
+    if strategy_name is not None:
+        external_manifest = find_external_strategy(strategy_name, game_name)
+        if external_manifest is not None:
+            print(
+                "Loaded external strategy override: "
+                f"{external_manifest.strategy_name} from {external_manifest.package_dir}"
+            )
+            try:
+                return load_external_strategy(external_manifest)
+            except (OSError, ValueError, ImportError) as exc:
+                raise GameLoadError(
+                    f"External strategy load failed: {external_manifest.package_dir}: {exc}"
+                ) from exc
     module = _load_strategy_module(game_name, strategy_name)
     if hasattr(module, "create_strategy"):
         strategy = module.create_strategy()
