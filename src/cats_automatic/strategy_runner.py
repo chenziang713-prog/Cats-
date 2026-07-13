@@ -6,7 +6,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .actions import ActionBackend, ActionResult, ClickAction, TapAction
+from .actions import ActionBackend, ActionResult, ClickAction, TapAction, execute_action
 from .backends import CaptureBackend, CaptureBackendError
 from .console_output import (
     decision_summary,
@@ -95,6 +95,7 @@ class StrategyRunner:
         self.returned_to_home_after_ad = False
         self._current_screen_path: Path | None = None
         self._current_detections: dict[str, DetectionResult] = {}
+        self._current_image_size: tuple[int, int] | None = None
 
     def run(self) -> int:
         completed = 0
@@ -127,6 +128,7 @@ class StrategyRunner:
                     self.run_recorder.event("capture_error", loop=loop_index, error=str(exc))
                 break
             print(f"Capture image size: width={frame.size[0]}, height={frame.size[1]}")
+            self._current_image_size = frame.size
             if self.run_recorder is not None:
                 frame_path = self.run_recorder.record_loop_capture(loop_index, frame.path)
                 frame = type(frame)(
@@ -345,7 +347,19 @@ class StrategyRunner:
     ) -> bool:
         state_before = str(getattr(self.strategy, "state", "unknown"))
         if decision.kind == "wait":
-            action_result = self.action_backend.wait(decision.wait_seconds, decision.reason)
+            action_name = decision.action_name or "wait"
+            action_result = execute_action(
+                {
+                    "name": action_name,
+                    "params": {
+                        "seconds": decision.wait_seconds,
+                        **dict(decision.action_params),
+                    },
+                    "reason": decision.reason,
+                },
+                self.action_backend,
+                state_result=self._build_state_result(detections),
+            )
             if decision.reason in {
                 "watch_ad_detected_before_battle_complete_ignored",
                 "close_ad_detected_before_ad_stage_ignored",
@@ -354,20 +368,40 @@ class StrategyRunner:
                     "wait",
                     "skipped_stage_not_ready",
                     decision.reason,
+                    success=True,
+                    action=action_name,
+                    dry_run=action_result.dry_run,
+                    message="stage_not_ready",
                 )
             elif decision.reason == "close_ad_candidate_below_threshold_after_ad_wait":
                 action_result = ActionResult(
                     "wait",
                     "waiting_close_ad",
                     decision.reason,
+                    success=True,
+                    action=action_name,
+                    dry_run=action_result.dry_run,
+                    message="waiting_close_ad",
                 )
             elif decision.reason == "scrap_watch_ad_button_cooldown_detected":
-                action_result = ActionResult("state_transition", "skipped_cooldown", decision.reason)
+                action_result = ActionResult(
+                    "state_transition",
+                    "skipped_cooldown",
+                    decision.reason,
+                    success=True,
+                    action=action_name,
+                    dry_run=action_result.dry_run,
+                    message="cooldown_detected",
+                )
             elif decision.reason.startswith("miss_count_") and "_waiting_" in decision.reason:
                 action_result = ActionResult(
                     "wait",
                     "waiting_for_miss_threshold",
                     decision.reason,
+                    success=True,
+                    action=action_name,
+                    dry_run=action_result.dry_run,
+                    message="waiting_for_miss_threshold",
                 )
             self._last_decision = decision
             self._last_action_result = action_result
@@ -377,11 +411,7 @@ class StrategyRunner:
                 else None
             )
             self._record_action(decision, action_result, detection, None)
-            interrupted = self._perform_strategy_wait(decision)
-            if interrupted:
-                self._stop_requested = True
-            else:
-                self._notify_action_result(decision, action_result)
+            self._notify_action_result(decision, action_result)
             self._register_watchdog_action(decision, action_result, state_before)
             return True
         if decision.kind == "stop":
@@ -394,7 +424,14 @@ class StrategyRunner:
             return False
         if decision.kind == "keyevent":
             keycode = "BACK" if decision.target_name == "adb_back" else (decision.target_name or "BACK")
-            action_result = self.action_backend.keyevent(keycode, decision.reason)
+            if decision.action_name == "press_back" and keycode == "BACK":
+                action_result = execute_action(
+                    {"name": "press_back", "params": {}, "reason": decision.reason},
+                    self.action_backend,
+                    state_result=self._build_state_result(detections),
+                )
+            else:
+                action_result = self.action_backend.keyevent(keycode, decision.reason)
             if action_result is None:
                 action_result = ActionResult("dry_run_keyevent", "executed", decision.reason)
             delay_info = None
@@ -933,6 +970,20 @@ class StrategyRunner:
             max_actions_used=self.action_backend.action_count,
             close_streak=getattr(self.strategy, "_consecutive_close_actions", None),
         )
+
+    def _build_state_result(
+        self,
+        detections: dict[str, DetectionResult],
+    ) -> dict[str, object]:
+        best_marker = None
+        if detections:
+            best_marker = max(detections.values(), key=lambda detection: detection.confidence).name
+        return {
+            "detections": detections,
+            "best_marker": best_marker,
+            "image_size": self._current_image_size,
+            "screenshot_path": str(self._current_screen_path) if self._current_screen_path else "",
+        }
 
 
 def _timestamp() -> str:

@@ -30,7 +30,7 @@ def test_start_jumps_to_go_home() -> None:
     assert strategy.current_step == "GO_HOME"
 
 
-def test_go_home_home_clicks_activity_entry() -> None:
+def test_go_home_home_clicks_activity_entry_without_advancing_before_state_changes() -> None:
     strategy = Strategy()
     strategy.current_step = "GO_HOME"
 
@@ -38,7 +38,7 @@ def test_go_home_home_clicks_activity_entry() -> None:
     strategy.on_action_result(decision, DryRunBackend().wait(0.0, decision.reason))
 
     assert decision.action_name == "click_activity_entry"
-    assert strategy.current_step == "ENTER_ACTIVITY"
+    assert strategy.current_step == "GO_HOME"
 
 
 def test_watch_ad_running_waits_and_stays_watch_ad() -> None:
@@ -52,15 +52,16 @@ def test_watch_ad_running_waits_and_stays_watch_ad() -> None:
     assert strategy.current_step == "WATCH_AD"
 
 
-def test_watch_ad_close_visible_moves_to_close_ad() -> None:
+def test_watch_ad_close_visible_without_safe_marker_waits() -> None:
     strategy = Strategy()
     strategy.current_step = "WATCH_AD"
 
     decision = strategy.decide(_context({"AD_CLOSE_PAGE": _detection("AD_CLOSE_PAGE")}))
     strategy.on_action_result(decision, DryRunBackend().wait(0.0, decision.reason))
 
-    assert decision.action_name == "close_ad"
-    assert strategy.current_step == "CLOSE_AD"
+    assert decision.action_name == "wait"
+    assert decision.reason == "no_safe_close_ad_marker"
+    assert strategy.current_step == "WATCH_AD"
 
 
 def test_unknown_combination_defaults_to_wait() -> None:
@@ -106,7 +107,8 @@ def test_dry_run_runner_does_not_execute_adb_and_records_loop_fields(tmp_path: P
     assert event["step"] == "START"
     assert event["state"] == "UNKNOWN_PAGE"
     assert event["action"] == "no_action"
-    assert event["action_result"] == "dry_run_skipped"
+    assert event["action_result"]["action"] == "no_action"
+    assert event["action_result"]["dry_run"] is True
     assert event["next_step"] == "GO_HOME"
     assert event["step_changed"] is True
     assert event["run_id"] == recorder.run_id

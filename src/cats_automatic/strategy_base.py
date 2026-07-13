@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from typing import Any
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -66,6 +67,7 @@ class StrategyDecision:
     kind: str
     target_name: str | None = None
     action_name: str = ""
+    action_params: Mapping[str, Any] = field(default_factory=dict, compare=False)
     wait_seconds: float = 0.0
     reason: str = ""
     post_action_delay_seconds: float = field(default=0.0, compare=False)
@@ -113,11 +115,32 @@ class StrategyDecision:
         seconds: float = 1.0,
         reason: str = "",
         target_name: str | None = None,
+        action_name: str = "",
+        action_params: Mapping[str, Any] | None = None,
     ) -> "StrategyDecision":
         return cls(
             kind="wait",
             target_name=target_name,
+            action_name=action_name,
+            action_params={} if action_params is None else action_params,
             wait_seconds=seconds,
+            reason=reason,
+        )
+
+    @classmethod
+    def action(
+        cls,
+        action_name: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        reason: str = "",
+        wait_seconds: float = 0.0,
+    ) -> "StrategyDecision":
+        return cls(
+            kind="wait",
+            action_name=action_name,
+            action_params={} if params is None else params,
+            wait_seconds=wait_seconds,
             reason=reason,
         )
 

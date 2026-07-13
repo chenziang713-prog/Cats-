@@ -338,7 +338,7 @@ class RunRecorder:
                 "interrupted_by_stop_file": str(delay_interrupted_by_stop_file).lower(),
                 "decision": decision_name,
             }
-        self.event("action", **row)
+        self.event("action", **row, action_result=action_result.to_dict())
 
     def record_delay(
         self,
