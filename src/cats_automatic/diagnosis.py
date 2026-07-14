@@ -140,6 +140,17 @@ def generate_diagnosis(
         problems.append("达到最大动作数限制，可能是 max-actions 较小或流程重复。")
     if event_names["global_stall_detected"]:
         problems.append(f"本次触发全局异常恢复 {event_names['global_stall_detected']} 次。")
+    if event_names["stuck_detected"]:
+        level3_count = sum(
+            1
+            for event in events
+            if event.get("event") == "stuck_detected" and event.get("recovery_level") == 3
+        )
+        problems.append(
+            f"流程 stuck/recovery 触发 {event_names['stuck_detected']} 次，Level 3 重置 {level3_count} 次。"
+        )
+        if level3_count:
+            suggestions.append("查看 stuck_detected 事件中的 stuck_reason、step_before_recovery 和 screenshot_path。")
     if event_names["click_no_effect_detected"]:
         problems.append("检测到点击后页面没有明显变化。")
         suggestions.append("检查点击坐标、按钮遮挡、模拟器响应和页面是否卡住。")

@@ -169,6 +169,7 @@ class Strategy:
         self.close_ad_attempts = 0
         self._last_close_marker: str | None = None
         self._last_close_screenshot_path = ""
+        self.last_monitor_payload: dict[str, Any] = {}
 
     def targets(self):
         state_targets = tuple(
@@ -280,6 +281,7 @@ class Strategy:
         self._pending_log["action_result"] = action_result.to_dict()
         self._pending_log["next_step"] = new_step
         self._pending_log["step_changed"] = new_step != old_step
+        self.last_monitor_payload = dict(self._pending_log)
         self.current_step = new_step
         self.state = self.current_step
         if action == "tap_marker" and action_result.success:
@@ -294,6 +296,13 @@ class Strategy:
             self._last_close_screenshot_path = ""
         self._events.append({"event": "minimal_dry_run_loop", **self._pending_log})
         self._pending_log = None
+
+    def reset_for_recovery(self, step: str = "GO_HOME") -> None:
+        self.current_step = step
+        self.state = self.current_step
+        self.close_ad_attempts = 0
+        self._last_close_marker = None
+        self._last_close_screenshot_path = ""
 
     def consume_strategy_events(self) -> list[dict[str, Any]]:
         events = self._events

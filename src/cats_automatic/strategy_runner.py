@@ -29,6 +29,7 @@ from .strategy_base import (
     StrategyProtocol,
     TargetSpec,
 )
+from .stuck_recovery import StuckRecoveryTracker
 from .vision import MatchResult, match_template
 
 Matcher = Callable[..., MatchResult]
@@ -96,6 +97,7 @@ class StrategyRunner:
         self._current_screen_path: Path | None = None
         self._current_detections: dict[str, DetectionResult] = {}
         self._current_image_size: tuple[int, int] | None = None
+        self.stuck_recovery = StuckRecoveryTracker()
 
     def run(self) -> int:
         completed = 0
@@ -190,18 +192,20 @@ class StrategyRunner:
             )
             self._record_error_popup_events(loop_index)
             if decision is None:
-                decision = self.strategy.decide(context)
-                if self.run_recorder is not None and hasattr(
-                    self.strategy, "consume_state_recovery_event"
-                ):
-                    recovery_event = self.strategy.consume_state_recovery_event()
-                    if recovery_event is not None:
-                        self.run_recorder.event(
-                            "state_recovered",
-                            cycle_index=self._current_cycle_index,
-                            **recovery_event,
-                        )
-                self._record_pending_strategy_events(detections)
+                decision = self._consume_pending_recovery(loop_index, frame.path)
+                if decision is None:
+                    decision = self.strategy.decide(context)
+                    if self.run_recorder is not None and hasattr(
+                        self.strategy, "consume_state_recovery_event"
+                    ):
+                        recovery_event = self.strategy.consume_state_recovery_event()
+                        if recovery_event is not None:
+                            self.run_recorder.event(
+                                "state_recovered",
+                                cycle_index=self._current_cycle_index,
+                                **recovery_event,
+                            )
+                    self._record_pending_strategy_events(detections)
             if not handling_error_popup:
                 trigger = self.recovery_watchdog.observe(
                     state=str(getattr(self.strategy, "state", "unknown")),
@@ -277,6 +281,7 @@ class StrategyRunner:
                 continue
             if self._execute_decision(decision, detections):
                 completed += 1
+            self._observe_stuck_recovery(loop_index, decision)
             if self._stop_requested:
                 stop_reason = "license_heartbeat_failed" if self._license_failed else "stop_file"
                 break
@@ -970,6 +975,84 @@ class StrategyRunner:
             max_actions_used=self.action_backend.action_count,
             close_streak=getattr(self.strategy, "_consecutive_close_actions", None),
         )
+
+    def _consume_pending_recovery(
+        self,
+        loop_index: int,
+        screenshot_path: Path,
+    ) -> StrategyDecision | None:
+        plan = self.stuck_recovery.consume_pending_recovery(
+            loop_index=loop_index,
+            screenshot_path=str(screenshot_path),
+        )
+        if plan is None or plan.decision is None:
+            return None
+        if self.run_recorder is not None:
+            self.run_recorder.event(
+                "recovery_action",
+                loop=loop_index,
+                cycle_index=self._current_cycle_index,
+                stuck_reason=plan.stuck_reason,
+                recovery_level=plan.recovery_level,
+                recovery_action=plan.recovery_action,
+                screenshot_path=str(screenshot_path),
+            )
+        return plan.decision
+
+    def _observe_stuck_recovery(
+        self,
+        loop_index: int,
+        decision: StrategyDecision,
+    ) -> None:
+        payload = self._strategy_monitor_payload(decision)
+        current_step = str(payload.get("current_step", payload.get("step", getattr(self.strategy, "state", ""))))
+        current_state = str(payload.get("state", "UNKNOWN_PAGE"))
+        action = str(payload.get("action", decision.action_name or decision.kind))
+        action_result = self._last_action_result
+        if action_result is None:
+            return
+        selected_marker = payload.get("selected_marker")
+        clicked_marker = str(selected_marker) if selected_marker else None
+        plan = self.stuck_recovery.observe(
+            loop_index=loop_index,
+            current_step=current_step,
+            current_state=current_state,
+            action=action,
+            action_result=action_result,
+            screenshot_path=str(self._current_screen_path or ""),
+            step_changed=bool(payload.get("step_changed", False)),
+            clicked_marker=clicked_marker,
+            close_ad_attempts=int(getattr(self.strategy, "close_ad_attempts", 0)),
+        )
+        if plan is None:
+            return
+        if plan.recovery_level == 3 and hasattr(self.strategy, "reset_for_recovery"):
+            self.strategy.reset_for_recovery("GO_HOME")
+        if self.run_recorder is not None:
+            self.run_recorder.event(
+                "stuck_detected",
+                loop=loop_index,
+                cycle_index=self._current_cycle_index,
+                **plan.event,
+            )
+
+    def _strategy_monitor_payload(self, decision: StrategyDecision) -> dict[str, object]:
+        if decision.reason.startswith("recovery_level_"):
+            return {
+                "current_step": str(getattr(self.strategy, "state", "")),
+                "state": "UNKNOWN_PAGE",
+                "action": decision.action_name or decision.kind,
+                "step_changed": False,
+            }
+        payload = getattr(self.strategy, "last_monitor_payload", None)
+        if isinstance(payload, dict):
+            return payload
+        return {
+            "current_step": str(getattr(self.strategy, "state", "")),
+            "state": "UNKNOWN_PAGE",
+            "action": decision.action_name or decision.kind,
+            "step_changed": False,
+        }
 
     def _build_state_result(
         self,
