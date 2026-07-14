@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from cats_automatic.actions import DEFAULT_TAP_MARKER_ALLOW_LIST
+from .close_markers import SAFE_CLOSE_MARKER_PATTERNS
 
 
-AD_CLOSE_MARKERS = tuple(sorted(DEFAULT_TAP_MARKER_ALLOW_LIST))
+AD_CLOSE_MARKERS = SAFE_CLOSE_MARKER_PATTERNS
 
 HOME_MARKERS = (
     "main-definate",
@@ -83,10 +83,7 @@ REGISTERED_MARKERS = tuple(
             *POPUP_MARKERS,
             *FILM_MARKERS,
             *TOURNAMENT_MARKERS,
-            "close_buttons",
             "watch_user_*",
-            "close_user_*",
-            "close_end_*",
         )
     )
 )

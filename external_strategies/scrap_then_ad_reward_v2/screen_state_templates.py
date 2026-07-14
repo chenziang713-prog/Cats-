@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .close_markers import SAFE_CLOSE_MARKER_PATTERNS
 from .screen_state_types import ScreenStateTemplate
 from .template_sources import (
     ACTION_ONLY_MARKERS,
@@ -87,10 +88,7 @@ FILM_WATCH_PAGE = _state(
         "home_right_ad_marker",
     ],
     exclude_any=[
-        "close_ad",
-        "close_user_*",
-        "close_end_*",
-        "close_buttons",
+        *SAFE_CLOSE_MARKER_PATTERNS,
         "right_ad_reward_success_buttons",
         "right_ad_reward_success_marker",
     ],
@@ -101,7 +99,7 @@ FILM_WATCH_PAGE = _state(
 
 AD_CLOSE_PAGE = _state(
     "AD_CLOSE_PAGE",
-    required_any=["close_ad", "close_user_*", "close_end_*", "close_buttons"],
+    required_any=list(SAFE_CLOSE_MARKER_PATTERNS),
     exclude_any=[
         "right_ad_reward_success_buttons",
         "right_ad_reward_success_marker",

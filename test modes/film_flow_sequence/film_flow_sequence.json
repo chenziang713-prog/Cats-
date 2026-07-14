@@ -1,0 +1,35 @@
+{
+  "name": "film_reward_full_flow",
+  "screenshots": [
+    {
+      "name": "home",
+      "image": "01_home.png",
+      "expected_state": "HOME"
+    },
+    {
+      "name": "film_select",
+      "image": "02_film_select.png",
+      "expected_state": "FILM_WATCH_PAGE"
+    },
+    {
+      "name": "ad_playing",
+      "image": "03_ad_playing.png",
+      "expected_state": "UNKNOWN"
+    },
+    {
+      "name": "ad_close",
+      "image": "04_ad_close.png",
+      "expected_state": "AD_CLOSE_PAGE"
+    },
+    {
+      "name": "reward",
+      "image": "05_reward.png",
+      "expected_state": "RIGHT_AD_REWARD_SUCCESS_PAGE"
+    },
+    {
+      "name": "home_after_reward",
+      "image": "06_home_after_reward.png",
+      "expected_state": "HOME"
+    }
+  ]
+}

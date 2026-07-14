@@ -13,8 +13,10 @@ from external_strategies.scrap_then_ad_reward_v2.film_flow import (
     FILM_STATES,
     FILM_STEPS,
     FILM_UNRESOLVED_CONFIRMATIONS,
+    V2_SAFE_CLOSE_MARKER_ALLOW_LIST,
     decide_film_flow_action,
 )
+from external_strategies.scrap_then_ad_reward_v2.screen_state_detector import _template_paths_for_marker
 from external_strategies.scrap_then_ad_reward_v2.validation import validate_strategy_config
 
 
@@ -124,25 +126,39 @@ def test_watch_ad_close_uses_only_safe_close_marker() -> None:
         state="AD_CLOSE_PAGE",
         detections={
             "ad_entry": _detection("ad_entry", 0.99),
-            "close_end_2": _detection("close_end_2", 0.91),
+            "close_buttons": _close_detection(0.91),
         },
     )
 
     assert decision.action["name"] == "tap_marker"
-    assert decision.action["params"]["marker"] == "close_end_2"
-    assert decision.selected_marker == "close_end_2"
+    assert decision.action["params"]["marker"] == "close_buttons"
+    assert decision.selected_marker == "close_buttons"
     assert decision.next_step == "CLOSE_AD_DOING"
+
+
+def test_watch_ad_close_ignores_similar_non_canonical_marker_name() -> None:
+    decision = decide_film_flow_action(
+        step="WATCH_AD",
+        state="AD_CLOSE_PAGE",
+        detections={
+            "close_buttons": _close_detection(0.91),
+            "close_ad": _close_detection(0.95),
+        },
+    )
+
+    assert decision.action["name"] == "tap_marker"
+    assert decision.action["params"]["marker"] == "close_buttons"
 
 
 def test_close_ad_doing_close_page_retries_safe_marker() -> None:
     decision = decide_film_flow_action(
         step="CLOSE_AD_DOING",
         state="AD_CLOSE_PAGE",
-        detections={"close_end_2": _detection("close_end_2", 0.91)},
+        detections={"close_buttons": _close_detection(0.91)},
     )
 
     assert decision.action["name"] == "tap_marker"
-    assert decision.action["params"]["marker"] == "close_end_2"
+    assert decision.action["params"]["marker"] == "close_buttons"
     assert decision.next_step == "CLOSE_AD_DOING"
 
 
@@ -157,16 +173,43 @@ def test_close_ad_does_not_default_to_arbitrary_best_marker() -> None:
     assert decision.reason == "no_safe_close_ad_marker"
 
 
+def test_close_ad_page_marker_without_clickable_close_button_waits() -> None:
+    decision = decide_film_flow_action(
+        step="WATCH_AD",
+        state="AD_CLOSE_PAGE",
+        detections={"AD_CLOSE_PAGE": _detection("AD_CLOSE_PAGE", 0.99)},
+    )
+
+    assert decision.action["name"] == "wait"
+    assert decision.reason == "no_safe_close_ad_marker"
+
+
 def test_close_ad_total_attempt_limit_waits() -> None:
     decision = decide_film_flow_action(
         step="CLOSE_AD_DOING",
         state="AD_CLOSE_PAGE",
-        detections={"close_end_2": _detection("close_end_2", 0.99)},
+        detections={"close_buttons": _close_detection(0.99)},
         close_ad_attempts=FILM_CLOSE_AD_MAX_TOTAL_CLICKS,
     )
 
     assert decision.action["name"] == "wait"
     assert decision.reason == "close_ad_attempt_limit"
+
+
+def test_close_ad_below_threshold_waits() -> None:
+    decision = decide_film_flow_action(
+        step="WATCH_AD",
+        state="AD_CLOSE_PAGE",
+        detections={"close_buttons": _close_detection(0.79)},
+    )
+
+    assert decision.action["name"] == "wait"
+    assert decision.reason == "no_safe_close_ad_marker"
+
+
+def test_safe_close_allow_list_is_v2_canonical_not_global_actions_list() -> None:
+    assert "close_buttons" in V2_SAFE_CLOSE_MARKER_ALLOW_LIST
+    assert "close_buttons" not in DEFAULT_TAP_MARKER_ALLOW_LIST
 
 
 def test_close_ad_success_page_advances_to_claim_reward() -> None:
@@ -209,6 +252,20 @@ def _detection(name: str, confidence: float) -> DetectionResult:
     return DetectionResult(
         name=name,
         template=Path(f"{name}.png"),
+        confidence=confidence,
+        center=(10, 20),
+        top_left=(5, 15),
+        size=(10, 10),
+        scale=1.0,
+        threshold=0.8,
+    )
+
+
+def _close_detection(confidence: float) -> DetectionResult:
+    path = _template_paths_for_marker("close_buttons")[0]
+    return DetectionResult(
+        name="close_buttons",
+        template=path,
         confidence=confidence,
         center=(10, 20),
         top_left=(5, 15),

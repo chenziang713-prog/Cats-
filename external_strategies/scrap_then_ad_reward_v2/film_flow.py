@@ -4,15 +4,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from cats_automatic.actions import DEFAULT_TAP_MARKER_ALLOW_LIST
 from cats_automatic.strategy_base import DetectionResult
 from external_strategies.minimal_dry_run.strategy import (
-    CLOSE_AD_MARKER_PRIORITY,
     CLOSE_AD_MIN_CONFIDENCE,
-    select_close_ad_marker,
 )
 
 from .authoring import define_flow, define_state, no_action, press_back_action, tap_marker_action, wait_action
+from .close_markers import safe_close_marker_names, select_safe_close_marker
 from .marker_groups import (
     AD_CLOSE_MARKERS,
     HOME_MARKERS,
@@ -72,6 +70,11 @@ FILM_BUSINESS_TAP_MARKERS = (
 # Validation-only allow-list for this draft. It does not change actions.py.
 FILM_RULE_VALIDATION_TAP_MARKER_ALLOW_LIST = tuple(
     dict.fromkeys((*AD_CLOSE_MARKERS, *FILM_BUSINESS_TAP_MARKERS))
+)
+
+V2_SAFE_CLOSE_MARKER_ALLOW_LIST = safe_close_marker_names()
+V2_TAP_MARKER_ALLOW_LIST = tuple(
+    dict.fromkeys((*V2_SAFE_CLOSE_MARKER_ALLOW_LIST, *FILM_BUSINESS_TAP_MARKERS))
 )
 
 FILM_REGISTERED_MARKERS = tuple(
@@ -364,11 +367,9 @@ def _close_ad_or_wait(
 ) -> FilmDecision:
     if attempts >= FILM_CLOSE_AD_MAX_TOTAL_CLICKS:
         return _wait(step, state, "close_ad_attempt_limit")
-    selected = select_close_ad_marker(
+    selected = select_safe_close_marker(
         detections,
-        DEFAULT_TAP_MARKER_ALLOW_LIST,
-        CLOSE_AD_MIN_CONFIDENCE,
-        CLOSE_AD_MARKER_PRIORITY,
+        min_confidence=CLOSE_AD_MIN_CONFIDENCE,
     )
     if selected is None:
         return _wait(step, state, "no_safe_close_ad_marker")

@@ -366,6 +366,7 @@ class StrategyRunner:
                 },
                 self.action_backend,
                 state_result=self._build_state_result(detections),
+                allowed_markers=self._tap_marker_allow_list(),
             )
             if decision.reason in {
                 "watch_ad_detected_before_battle_complete_ignored",
@@ -438,6 +439,7 @@ class StrategyRunner:
                     {"name": "press_back", "params": {}, "reason": decision.reason},
                     self.action_backend,
                     state_result=self._build_state_result(detections),
+                    allowed_markers=self._tap_marker_allow_list(),
                 )
             else:
                 action_result = self.action_backend.keyevent(keycode, decision.reason)
@@ -1086,6 +1088,15 @@ class StrategyRunner:
             "image_size": self._current_image_size,
             "screenshot_path": str(self._current_screen_path) if self._current_screen_path else "",
         }
+
+    def _tap_marker_allow_list(self) -> frozenset[str] | None:
+        raw = getattr(self.strategy, "tap_marker_allow_list", None)
+        if raw is None:
+            return None
+        try:
+            return frozenset(str(value) for value in raw)
+        except TypeError:
+            return None
 
 
 def _timestamp() -> str:

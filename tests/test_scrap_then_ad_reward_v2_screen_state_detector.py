@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from external_strategies.scrap_then_ad_reward_v2.screen_state_detector import (
+    _template_paths_for_marker,
     detect_current_screen_state,
     detect_current_screen_state_from_detections,
     explain_screen_state_result,
@@ -33,10 +34,24 @@ def test_film_watch_page_matches_watch_marker() -> None:
 
 def test_ad_close_page_matches_close_ad() -> None:
     result = detect_current_screen_state_from_detections(
-        {"close_ad": {"confidence": 0.94}}
+        {"close_buttons": _close_button_detection(0.94)}
     )
 
     assert result.state_name == "AD_CLOSE_PAGE"
+    assert result.matched_markers == ["close_buttons"]
+
+
+def test_ad_close_page_rejects_close_marker_without_coordinates() -> None:
+    result = detect_current_screen_state_from_detections(
+        {
+            "close_buttons": {
+                "confidence": 0.94,
+                "template_path": str(_template_paths_for_marker("close_buttons")[0]),
+            }
+        }
+    )
+
+    assert result.state_name == "UNKNOWN"
 
 
 def test_reward_success_page_requires_own_markers() -> None:
@@ -162,3 +177,11 @@ def test_explain_screen_state_result_outputs_debug_fields() -> None:
     assert "current screen state: HOME" in explanation
     assert "confidence: 0.946" in explanation
     assert "selection_reason: single_active_state_match" in explanation
+
+
+def _close_button_detection(confidence: float) -> dict[str, object]:
+    return {
+        "confidence": confidence,
+        "center": (100, 40),
+        "template_path": str(_template_paths_for_marker("close_buttons")[0]),
+    }

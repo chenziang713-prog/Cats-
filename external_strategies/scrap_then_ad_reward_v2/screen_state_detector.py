@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from .close_markers import detection_confidence, safe_close_candidates
 from .screen_state_templates import ACTIVE_STATE_NAMES, SCREEN_STATE_TEMPLATES
 from .screen_state_types import MarkerMatchResult, ScreenStateResult, ScreenStateTemplate
 from .template_sources import (
@@ -107,6 +108,9 @@ def _evaluate_template(
     *,
     screenshot_path: str | None,
 ) -> ScreenStateResult:
+    if template.state_name == "AD_CLOSE_PAGE":
+        return _evaluate_ad_close_template(template, detections, screenshot_path=screenshot_path)
+
     raw_scores = _raw_scores_for_template(template, detections)
     matched_required_any = _matched_names(template.required_any, raw_scores, template.threshold)
     matched_required_all = _matched_names(template.required_all, raw_scores, template.threshold)
@@ -133,6 +137,46 @@ def _evaluate_template(
         reason = f"matched required marker(s) for {template.description}"
     else:
         reason = "required markers did not match"
+
+    return ScreenStateResult(
+        state_name=template.state_name,
+        matched=matched,
+        confidence=confidence,
+        priority=template.priority,
+        matched_markers=matched_markers,
+        missing_markers=missing_markers,
+        excluded_markers=excluded_markers,
+        best_marker=best_marker,
+        reason=reason,
+        raw_scores=raw_scores,
+        screenshot_path=screenshot_path,
+        loaded_template_dirs=[str(path) for path in V2_CANONICAL_TEMPLATE_DIRS],
+        active_state_names=sorted(ACTIVE_STATE_NAMES),
+    )
+
+
+def _evaluate_ad_close_template(
+    template: ScreenStateTemplate,
+    detections: Mapping[str, Any],
+    *,
+    screenshot_path: str | None,
+) -> ScreenStateResult:
+    raw_scores = _raw_scores_for_template(template, detections)
+    excluded_markers = _matched_names(template.exclude_any, raw_scores, template.threshold)
+    candidates = safe_close_candidates(detections, min_confidence=template.threshold)
+    matched_markers = [candidate.name for candidate in candidates]
+    has_excluded = bool(excluded_markers)
+    matched = bool(matched_markers) and not has_excluded
+    confidence = max((candidate.confidence for candidate in candidates), default=0.0)
+    best_marker = None if not candidates else max(candidates, key=lambda item: item.confidence).name
+    missing_markers = [] if matched_markers else list(template.required_any)
+
+    if has_excluded:
+        reason = f"excluded marker matched: {', '.join(excluded_markers)}"
+    elif matched:
+        reason = "matched safe close marker(s) with canonical template path and coordinates"
+    else:
+        reason = "no safe close marker with canonical template path and coordinates matched"
 
     return ScreenStateResult(
         state_name=template.state_name,
@@ -183,9 +227,8 @@ def _marker_matches(pattern: str, marker_name: str) -> bool:
 def _confidence(detection: Any) -> float:
     if isinstance(detection, MarkerMatchResult):
         return detection.confidence
-    if isinstance(detection, Mapping):
-        return float(detection.get("confidence", 0.0))
-    return float(getattr(detection, "confidence", 0.0))
+    value = detection_confidence(detection)
+    return 0.0 if value is None else value
 
 
 def _match_marker_safely(

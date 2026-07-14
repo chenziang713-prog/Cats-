@@ -74,6 +74,40 @@ def test_page_state_without_change_does_not_advance_click_step() -> None:
     assert event["action_result"]["error"] == "unknown_action"
 
 
+def test_strategy_runner_can_use_strategy_tap_marker_allow_list(tmp_path: Path) -> None:
+    screen = tmp_path / "screen.png"
+    Image.new("RGB", (80, 60), "white").save(screen)
+    strategy = TapMarkerAllowListStrategy()
+    runner = StrategyRunner(
+        game=_game(tmp_path),
+        strategy=strategy,
+        capture_backend=StaticImageCaptureBackend(screen),
+        action_backend=RecordingWaitBackend(),
+        root=tmp_path,
+        output_dir=tmp_path / "output" / "strategy",
+        max_loops=1,
+        sleep=lambda _seconds: None,
+    )
+    runner._current_image_size = (100, 100)
+    runner._current_screen_path = screen
+    decision = StrategyDecision.action(
+        "tap_marker",
+        params={"marker": "close_buttons", "min_confidence": 0.8},
+        reason="v2_close_buttons_allowed",
+    )
+
+    executed = runner._execute_decision(
+        decision,
+        {"close_buttons": _detection("close_buttons", center=(30, 40))},
+    )
+
+    assert executed is True
+    assert strategy.action_result is not None
+    assert strategy.action_result.success is True
+    assert strategy.action_result.action == "tap_marker"
+    assert strategy.action_result.clicked_pos == (30, 40)
+
+
 class RecordingWaitBackend:
     dry_run = True
 
@@ -121,6 +155,23 @@ class WaitOnceStrategy:
         self.action_result = action_result
 
 
+class TapMarkerAllowListStrategy:
+    state = "WATCH_AD"
+    tap_marker_allow_list = frozenset({"close_buttons"})
+
+    def __init__(self) -> None:
+        self.action_result: ActionResult | None = None
+
+    def targets(self):
+        return ()
+
+    def decide(self, context: StrategyContext) -> StrategyDecision:
+        return StrategyDecision.wait(0.0, "unused")
+
+    def on_action_result(self, decision: StrategyDecision, action_result: ActionResult) -> None:
+        self.action_result = action_result
+
+
 def _game(root: Path) -> GameDefinition:
     return GameDefinition("test", root / "config.json", root / "templates")
 
@@ -135,13 +186,18 @@ def _context(detections: dict[str, DetectionResult]) -> StrategyContext:
     )
 
 
-def _detection(name: str, confidence: float = 0.95) -> DetectionResult:
+def _detection(
+    name: str,
+    confidence: float = 0.95,
+    *,
+    center: tuple[int, int] = (10, 20),
+) -> DetectionResult:
     return DetectionResult(
         name=name,
         template=Path(f"{name}.png"),
         confidence=confidence,
-        center=(10, 20),
-        top_left=(5, 15),
+        center=center,
+        top_left=(center[0] - 5, center[1] - 5),
         size=(10, 10),
         scale=1.0,
         threshold=0.8,

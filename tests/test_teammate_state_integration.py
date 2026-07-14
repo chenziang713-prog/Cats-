@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from external_strategies.scrap_then_ad_reward_v2.film_flow import FILM_STATES, FILM_STEPS
-from external_strategies.scrap_then_ad_reward_v2.marker_groups import REGISTERED_MARKERS
+from external_strategies.scrap_then_ad_reward_v2.marker_groups import AD_CLOSE_MARKERS, REGISTERED_MARKERS
 from external_strategies.scrap_then_ad_reward_v2.screen_state_detector import (
     _template_paths_for_marker,
     detect_current_screen_state_from_detections,
@@ -111,10 +111,13 @@ def test_ad_entry_can_coexist_with_home_without_creating_film_entry_state() -> N
 
 def test_ad_close_page_requires_explicit_close_marker() -> None:
     assert detect_current_screen_state_from_detections({}).state_name == "UNKNOWN"
-    result = detect_current_screen_state_from_detections({"close_buttons": {"confidence": 0.93}})
+    result = detect_current_screen_state_from_detections(
+        {"close_buttons": _close_button_detection(0.93)}
+    )
 
     assert result.state_name == "AD_CLOSE_PAGE"
     assert "close_buttons" in result.matched_markers
+    assert AD_CLOSE_MARKERS == ("close_buttons", "close_ad", "close_user_*", "close_end_*")
 
 
 def test_reward_success_beats_weak_close_marker_by_exclusion_not_priority_only() -> None:
@@ -122,7 +125,7 @@ def test_reward_success_beats_weak_close_marker_by_exclusion_not_priority_only()
         {
             "right_ad_reward_success_buttons": {"confidence": 0.93},
             "right_ad_reward_success_marker": {"confidence": 0.94},
-            "close_buttons": {"confidence": 0.82},
+            "close_buttons": _close_button_detection(0.82),
         }
     )
 
@@ -199,3 +202,11 @@ def test_film_flow_steps_and_state_aliases_use_current_state_names() -> None:
     assert STATE_ALIASES["HOME_PAGE"] == "HOME"
     assert "AD_CLOSE_PAGE" not in STATE_ALIASES
     assert STATE_ALIASES["REWARD_PAGE"] == "RIGHT_AD_REWARD_SUCCESS_PAGE"
+
+
+def _close_button_detection(confidence: float) -> dict[str, object]:
+    return {
+        "confidence": confidence,
+        "center": (100, 40),
+        "template_path": str(_template_paths_for_marker("close_buttons")[0]),
+    }

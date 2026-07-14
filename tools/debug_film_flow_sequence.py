@@ -114,6 +114,14 @@ class SequenceReplayResult:
         return self.final_step == "FINISH"
 
     @property
+    def sequence_stuck(self) -> bool:
+        return any(record.sequence_stuck for record in self.records)
+
+    @property
+    def real_action_count(self) -> int:
+        return 0
+
+    @property
     def success(self) -> bool:
         return not self.failures and self.reached_finish
 
@@ -424,6 +432,8 @@ def print_report(result: SequenceReplayResult) -> None:
     print(f"  wrong_states: {result.wrong_states}")
     print(f"  final_step: {result.final_step}")
     print(f"  reached_finish: {result.reached_finish}")
+    print(f"  sequence_stuck: {result.sequence_stuck}")
+    print(f"  real_action_count: {result.real_action_count}")
     if result.failures:
         print("  failures:")
         for failure in result.failures:
