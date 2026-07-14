@@ -50,6 +50,46 @@ def test_reward_success_page_requires_own_markers() -> None:
     assert result.state_name == "RIGHT_AD_REWARD_SUCCESS_PAGE"
 
 
+def test_error_buttons_alone_are_action_only_and_do_not_create_error_page() -> None:
+    result = detect_current_screen_state_from_detections(
+        {"error_buttons": {"confidence": 0.96}}
+    )
+
+    assert result.state_name == "UNKNOWN"
+
+
+def test_error_popup_body_plus_error_button_creates_error_page() -> None:
+    result = detect_current_screen_state_from_detections(
+        {
+            "error_popups": {"confidence": 0.91},
+            "error_buttons": {"confidence": 0.96},
+        }
+    )
+
+    assert result.state_name == "ERROR_POPUP_PAGE"
+    assert result.matched_markers == ["error_popups"]
+
+
+def test_retry_buttons_alone_are_action_only_and_do_not_create_error_page() -> None:
+    result = detect_current_screen_state_from_detections(
+        {"retry_buttons": {"confidence": 0.96}}
+    )
+
+    assert result.state_name == "UNKNOWN"
+
+
+def test_error_popup_body_plus_retry_button_creates_error_page() -> None:
+    result = detect_current_screen_state_from_detections(
+        {
+            "error_popups": {"confidence": 0.91},
+            "retry_buttons": {"confidence": 0.96},
+        }
+    )
+
+    assert result.state_name == "ERROR_POPUP_PAGE"
+    assert result.matched_markers == ["error_popups"]
+
+
 def test_ad_playing_without_reliable_marker_is_unknown() -> None:
     result = detect_current_screen_state_from_detections({})
 

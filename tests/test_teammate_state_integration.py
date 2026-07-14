@@ -92,7 +92,9 @@ def test_registry_references_only_registered_markers_for_enabled_states() -> Non
 
 
 def test_action_only_markers_are_not_state_markers() -> None:
-    assert ACTION_ONLY_MARKERS == frozenset({"ad_entry"})
+    assert ACTION_ONLY_MARKERS == frozenset(
+        {"ad_entry", "error_buttons", "retry_buttons", "reconnect_buttons"}
+    )
     for template in SCREEN_STATE_TEMPLATES.values():
         required = set(template.required_any) | set(template.required_all)
         assert required.isdisjoint(ACTION_ONLY_MARKERS)
@@ -177,6 +179,17 @@ def test_real_close_button_image_is_ad_close_page() -> None:
 def test_real_reward_success_page_is_not_stolen_by_close_page() -> None:
     record = analyze_image(TEST_MODES / "6.ad_reward_page" / "4ff3a65555b4fb3d657a180ba322a8c6.png")
     assert record["screen_state"] == "RIGHT_AD_REWARD_SUCCESS_PAGE"
+
+
+def test_real_adb_reward_confirm_is_reward_not_error_popup() -> None:
+    record = analyze_image(TEST_MODES / "6.ad_reward_page" / "adb_reward_confirm.png")
+
+    assert record["generated_detections"]["error_buttons"]["confidence"] >= 0.95
+    assert record["generated_detections"]["error_popups"]["confidence"] < 0.80
+    assert record["screen_state"] == "RIGHT_AD_REWARD_SUCCESS_PAGE"
+    assert record["selected_state"] == "RIGHT_AD_REWARD_SUCCESS_PAGE"
+    assert record["selected_state"] != "ERROR_POPUP_PAGE"
+    assert "get_reward" in record["matched_markers"]
 
 
 def test_film_flow_steps_and_state_aliases_use_current_state_names() -> None:

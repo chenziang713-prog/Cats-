@@ -21,7 +21,14 @@ V2_CANONICAL_TEMPLATE_DIR_NAMES = tuple(
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
-ACTION_ONLY_MARKERS = frozenset({"ad_entry"})
+ACTION_ONLY_MARKERS = frozenset(
+    {
+        "ad_entry",
+        "error_buttons",
+        "retry_buttons",
+        "reconnect_buttons",
+    }
+)
 
 
 def normalize_user_marker_name(name: str) -> str:

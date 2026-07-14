@@ -115,8 +115,8 @@ AD_CLOSE_PAGE = _state(
 
 RIGHT_AD_REWARD_SUCCESS_PAGE = _state(
     "RIGHT_AD_REWARD_SUCCESS_PAGE",
-    required_all=["right_ad_reward_success_buttons", "right_ad_reward_success_marker"],
-    threshold=0.80,
+    required_any=["get_reward", "right_ad_reward_success_buttons", "right_ad_reward_success_marker"],
+    threshold=0.78,
     priority=88,
     description="right-side ad reward success page markers",
 )
@@ -126,11 +126,7 @@ ERROR_POPUP_PAGE = _state(
     required_any=[
         "error_popup",
         "network_error_popup",
-        "retry_button",
         "error_popups",
-        "retry_buttons",
-        "reconnect_buttons",
-        "error_buttons",
     ],
     threshold=0.80,
     priority=95,
