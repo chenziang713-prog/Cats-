@@ -36,6 +36,8 @@ REQUIRED_TEMPLATE_DIRS = (
     REPO_ROOT / "external_strategies" / "scrap_ad_battle" / "templates",
     REPO_ROOT / "external_strategies" / "scrap_then_ad_reward" / "templates",
     REPO_ROOT / "user_templates",
+    REPO_ROOT / "状态判断文件及状态图片" / "page_status_judge_page",
+    REPO_ROOT / "状态判断文件及状态图片" / "user_templates",
 )
 SUPPLEMENTAL_TEMPLATE_DIRS = (
     REPO_ROOT / "src" / "cats_automatic" / "games" / "cats" / "templates",
@@ -167,6 +169,15 @@ def load_template_candidates(
 
 def marker_name_for_template(path: Path, source_dir: Path) -> str:
     relative_parts = path.relative_to(source_dir).parts
+    if source_dir.name == "page_status_judge_page":
+        if len(relative_parts) >= 3:
+            return relative_parts[-2]
+        if len(relative_parts) >= 2:
+            return normalize_marker_stem(relative_parts[0])
+    if source_dir.parent.name == "状态判断文件及状态图片" and source_dir.name == "user_templates":
+        if len(relative_parts) >= 2:
+            return relative_parts[0]
+
     parent_names = {part.lower() for part in relative_parts[:-1]}
     safe_stem = normalize_marker_stem(path.stem)
 

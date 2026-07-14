@@ -8,6 +8,9 @@ from .screen_state_templates import SCREEN_STATE_TEMPLATES
 from .screen_state_types import MarkerMatchResult, ScreenStateResult, ScreenStateTemplate
 
 
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
+
+
 def detect_current_screen_state_from_detections(
     detections: Mapping[str, Any],
     template_registry: Mapping[str, ScreenStateTemplate] | None = None,
@@ -179,24 +182,55 @@ def _match_marker_safely(
     templates: Any,
     matcher: Any,
 ) -> MarkerMatchResult | None:
+    best: MarkerMatchResult | None = None
     for template in templates:
         for template_dir in template.template_dirs:
-            template_path = (Path(__file__).resolve().parent / template_dir / f"{marker_name}.png").resolve()
-            if not template_path.exists():
-                continue
-            try:
-                result = matcher(screenshot, template_path, template.threshold)
-            except TypeError:
-                result = matcher(screenshot=screenshot, template_path=template_path, threshold=template.threshold)
-            confidence = _confidence(result)
-            return MarkerMatchResult(
-                marker_name=marker_name,
-                matched=confidence >= template.threshold,
-                confidence=confidence,
-                center=getattr(result, "center", None),
-                template_path=str(template_path),
-            )
-    return None
+            for template_path in _template_paths_for_marker(marker_name, template_dir):
+                try:
+                    result = matcher(screenshot, template_path, template.threshold)
+                except TypeError:
+                    result = matcher(screenshot=screenshot, template_path=template_path, threshold=template.threshold)
+                confidence = _confidence(result)
+                candidate = MarkerMatchResult(
+                    marker_name=marker_name,
+                    matched=confidence >= template.threshold,
+                    confidence=confidence,
+                    center=getattr(result, "center", None),
+                    template_path=str(template_path),
+                )
+                if best is None or candidate.confidence > best.confidence:
+                    best = candidate
+    return best
+
+
+def _template_paths_for_marker(marker_name: str, template_dir: str | Path) -> list[Path]:
+    base = (Path(__file__).resolve().parent / template_dir).resolve()
+    if not base.exists() or not base.is_dir():
+        return []
+
+    candidates: list[Path] = []
+    for suffix in IMAGE_SUFFIXES:
+        direct_file = base / f"{marker_name}{suffix}"
+        if direct_file.is_file():
+            candidates.append(direct_file)
+
+    direct_dir = base / marker_name
+    if direct_dir.is_dir():
+        candidates.extend(_image_files(direct_dir))
+
+    for marker_dir in base.rglob(marker_name):
+        if marker_dir.is_dir() and marker_dir != direct_dir:
+            candidates.extend(_image_files(marker_dir))
+
+    return sorted(dict.fromkeys(path.resolve() for path in candidates))
+
+
+def _image_files(directory: Path) -> list[Path]:
+    return sorted(
+        path
+        for path in directory.rglob("*")
+        if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
+    )
 
 
 def _unknown_result(reason: str, *, screenshot_path: str | None = None) -> ScreenStateResult:
