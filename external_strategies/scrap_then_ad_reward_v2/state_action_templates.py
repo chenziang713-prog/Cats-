@@ -82,6 +82,10 @@ def handle_ad_running_page_state(context: Any, screen_state_result: ScreenStateR
     return _no_action(screen_state_result, "当前只是广告播放页动作模板，尚未接管真实点击")
 
 
+def handle_ad_close_page_state(context: Any, screen_state_result: ScreenStateResult) -> dict[str, Any]:
+    return _no_action(screen_state_result, "ad close marker observed; flow layer must choose any safe close action")
+
+
 def handle_special_chest_page_state(context: Any, screen_state_result: ScreenStateResult) -> dict[str, Any]:
     """特殊宝箱页动作模板。
 
@@ -144,6 +148,7 @@ STATE_ACTION_HANDLERS: dict[str, Callable[[Any, ScreenStateResult], dict[str, An
     "BATTLE_RESULT_PAGE": handle_battle_result_page_state,
     "SCRAP_WATCH_AD_PAGE": handle_scrap_watch_ad_page_state,
     "AD_RUNNING_PAGE": handle_ad_running_page_state,
+    "AD_CLOSE_PAGE": handle_ad_close_page_state,
     "SPECIAL_CHEST_PAGE": handle_special_chest_page_state,
     "FILM_ENTRY_PAGE": handle_film_entry_page_state,
     "FILM_WATCH_PAGE": handle_film_watch_page_state,

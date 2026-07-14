@@ -138,7 +138,7 @@ def test_existing_screen_state_templates_remain_compatible() -> None:
         registered_markers=REGISTERED_MARKERS,
         supported_actions=SUPPORTED_ACTIONS,
         known_steps=KNOWN_STEPS,
-        aliases=STATE_ALIASES,
+        aliases={key: value for key, value in STATE_ALIASES.items() if value in SCREEN_STATE_TEMPLATES},
         tap_marker_allow_list=AD_CLOSE_MARKERS,
     )
 

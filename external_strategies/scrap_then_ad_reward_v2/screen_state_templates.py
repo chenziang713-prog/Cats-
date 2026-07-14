@@ -146,14 +146,12 @@ GET_THREE_BOLTS_MARKER = _state(
     description="disabled: teammate name preserved, but marker images were not delivered",
 )
 
-# This name is preserved even though close_buttons currently means
-# the ad close button is visible, not that video playback is still running.
-AD_RUNNING_PAGE = _state(
-    "AD_RUNNING_PAGE",
+AD_CLOSE_PAGE = _state(
+    "AD_CLOSE_PAGE",
     required_any=["close_ad", "close_user_*", "close_end_*", "close_buttons"],
     threshold=0.80,
     priority=90,
-    description="ad close controls visible; semantic name kept for compatibility",
+    description="ad close controls visible; safe close decision may run",
 )
 
 SPECIAL_CHEST_PAGE = _state(
@@ -275,7 +273,7 @@ ENABLED_SCREEN_STATE_TEMPLATES = [
     TOURNAMENT_BATTLE_RESULT_PAGE,
     SCRAP_WATCH_AD_PAGE,
     AD_BOLT_ACCELERATOR_PAGE,
-    AD_RUNNING_PAGE,
+    AD_CLOSE_PAGE,
     SPECIAL_CHEST_PAGE,
     FILM_ENTRY_PAGE,
     FILM_WATCH_PAGE,

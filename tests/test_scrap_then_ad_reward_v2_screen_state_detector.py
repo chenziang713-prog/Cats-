@@ -54,12 +54,12 @@ def test_battle_result_priority_beats_normal_page() -> None:
     assert result.state_name == "BATTLE_RESULT_PAGE"
 
 
-def test_ad_running_page_matches_close_ad() -> None:
+def test_ad_close_page_matches_close_ad() -> None:
     result = detect_current_screen_state_from_detections(
         {"close_ad": {"confidence": 0.94}}
     )
 
-    assert result.state_name == "AD_RUNNING_PAGE"
+    assert result.state_name == "AD_CLOSE_PAGE"
 
 
 def test_special_chest_page_matches_open_button() -> None:

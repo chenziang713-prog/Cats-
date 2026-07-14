@@ -12,7 +12,7 @@ from external_strategies.minimal_dry_run.strategy import (
     select_close_ad_marker,
 )
 
-from .authoring import define_flow, define_state, no_action, tap_marker_action, wait_action
+from .authoring import define_flow, define_state, no_action, press_back_action, tap_marker_action, wait_action
 from .marker_groups import (
     AD_CLOSE_MARKERS,
     HOME_MARKERS,
@@ -37,13 +37,16 @@ FILM_STEPS = (
 
 FILM_STATES = (
     "HOME_PAGE",
+    "HOME",
     "FILM_SELECT_PAGE",
     "AD_RUNNING_PAGE",
     "AD_CLOSE_PAGE",
     "REWARD_PAGE",
+    "RIGHT_AD_REWARD_SUCCESS_PAGE",
     "LOADING_PAGE",
     "POPUP_PAGE",
     "UNKNOWN_PAGE",
+    "UNKNOWN",
 )
 
 FILM_ENTRY_MARKER = "ad_entry"
@@ -123,6 +126,13 @@ FILM_STATE_TEMPLATES = {
         exclude=AD_CLOSE_MARKERS,
         reason="draft reward page marker; needs confirmation",
         priority=80,
+    ),
+    "RIGHT_AD_REWARD_SUCCESS_PAGE": define_state(
+        "RIGHT_AD_REWARD_SUCCESS_PAGE",
+        require_any=("right_ad_reward_success_buttons", "right_ad_reward_success_marker"),
+        exclude=AD_CLOSE_MARKERS,
+        reason="teammate right ad reward success marker observed",
+        priority=85,
     ),
     "LOADING_PAGE": define_state(
         "LOADING_PAGE",
@@ -246,15 +256,15 @@ def decide_film_flow_action(
         return _decision(current_step, current_state, no_action("film_flow_finished"), "FINISH")
 
     if current_step == "GO_HOME":
-        if current_state == "HOME_PAGE":
+        if _is_home_state(current_state):
             return _decision(current_step, current_state, no_action("home_ready_for_film_entry"), "ENTER_FILM")
-        if current_state in {"LOADING_PAGE", "UNKNOWN_PAGE", "POPUP_PAGE"}:
+        if _is_wait_state(current_state) or current_state == "POPUP_PAGE":
             return _wait(current_step, current_state, "wait_for_home_or_recovery")
 
     if current_step == "ENTER_FILM":
         if current_state == "FILM_SELECT_PAGE":
             return _decision(current_step, current_state, no_action("film_select_page_confirmed"), "SELECT_REWARD")
-        if current_state == "HOME_PAGE":
+        if _is_home_state(current_state):
             return _tap_or_wait(
                 current_step,
                 current_state,
@@ -267,7 +277,7 @@ def decide_film_flow_action(
                 tap_reason="film_entry_marker_selected",
                 next_step="ENTER_FILM",
             )
-        if current_state in {"LOADING_PAGE", "UNKNOWN_PAGE"}:
+        if _is_wait_state(current_state):
             return _wait(current_step, current_state, "wait_for_film_select_page")
 
     if current_step == "SELECT_REWARD" and current_state == "FILM_SELECT_PAGE":
@@ -315,36 +325,50 @@ def decide_film_flow_action(
             return _wait(current_step, current_state, "film_ad_still_running")
         if current_state == "AD_CLOSE_PAGE":
             return _close_ad_or_wait(current_step, current_state, detections, close_ad_attempts, "CLOSE_AD_DOING")
-        if current_state in {"UNKNOWN_PAGE", "LOADING_PAGE"}:
+        if _is_wait_state(current_state):
             return _wait(current_step, current_state, "wait_for_ad_close_marker")
 
     if current_step == "CLOSE_AD_DOING":
         if current_state == "AD_CLOSE_PAGE":
             return _close_ad_or_wait(current_step, current_state, detections, close_ad_attempts, "CLOSE_AD_DOING")
-        if current_state == "REWARD_PAGE":
+        if _is_reward_success_state(current_state):
             return _decision(
                 current_step,
                 current_state,
                 no_action("reward_page_confirmed_after_ad_close"),
                 "CLAIM_REWARD",
             )
-        if current_state == "HOME_PAGE":
+        if _is_home_state(current_state):
             return _decision(current_step, current_state, no_action("already_home_after_ad_close"), "RETURN_HOME")
-        if current_state in {"UNKNOWN_PAGE", "LOADING_PAGE"}:
+        if _is_wait_state(current_state):
             return _wait(current_step, current_state, "wait_after_ad_close")
 
     if current_step == "CLAIM_REWARD":
+        if current_state == "RIGHT_AD_REWARD_SUCCESS_PAGE":
+            return _decision(
+                current_step,
+                current_state,
+                press_back_action(count=1, interval=0.3, reason="reward_success_press_back"),
+                "RETURN_HOME",
+            )
         if current_state == "REWARD_PAGE":
             return _claim_reward_or_wait(current_step, current_state, detections, reward_click_attempts, "RETURN_HOME")
-        if current_state == "HOME_PAGE":
+        if _is_home_state(current_state):
             return _decision(current_step, current_state, no_action("reward_already_returned_home"), "RETURN_HOME")
 
     if current_step == "RETURN_HOME":
-        if current_state == "HOME_PAGE":
+        if _is_home_state(current_state):
             return _decision(current_step, current_state, no_action("film_reward_flow_finished_home"), "FINISH")
+        if current_state == "RIGHT_AD_REWARD_SUCCESS_PAGE":
+            return _decision(
+                current_step,
+                current_state,
+                press_back_action(count=1, interval=0.3, reason="reward_success_press_back_retry"),
+                "RETURN_HOME",
+            )
         if current_state == "REWARD_PAGE":
             return _claim_reward_or_wait(current_step, current_state, detections, reward_click_attempts, "RETURN_HOME")
-        if current_state in {"UNKNOWN_PAGE", "LOADING_PAGE"}:
+        if _is_wait_state(current_state):
             return _wait(current_step, current_state, "wait_for_home_after_reward")
 
     return _wait(current_step, current_state, "no_matching_film_flow_rule")
@@ -358,7 +382,7 @@ def _close_ad_or_wait(
     next_step: str,
 ) -> FilmDecision:
     if attempts >= FILM_CLOSE_AD_MAX_TOTAL_CLICKS:
-        return _wait(step, state, "close_ad_attempt_limit_reached")
+        return _wait(step, state, "close_ad_attempt_limit")
     selected = select_close_ad_marker(
         detections,
         DEFAULT_TAP_MARKER_ALLOW_LIST,
@@ -462,3 +486,15 @@ def _has_marker(detections: Mapping[str, DetectionResult], marker: str) -> bool:
     if detection is None:
         return False
     return detection.confidence >= FILM_MARKER_MIN_CONFIDENCE.get(marker, CLOSE_AD_MIN_CONFIDENCE)
+
+
+def _is_home_state(state: str) -> bool:
+    return state in {"HOME", "HOME_PAGE"}
+
+
+def _is_wait_state(state: str) -> bool:
+    return state in {"UNKNOWN", "UNKNOWN_PAGE", "LOADING_PAGE"}
+
+
+def _is_reward_success_state(state: str) -> bool:
+    return state in {"RIGHT_AD_REWARD_SUCCESS_PAGE", "REWARD_PAGE"}

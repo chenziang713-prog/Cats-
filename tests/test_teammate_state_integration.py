@@ -87,7 +87,7 @@ def test_wildcard_rules_match_existing_detector_capability() -> None:
     )
 
     assert _marker_matches("close_user_*", "close_user_2_1")
-    assert result.state_name == "AD_RUNNING_PAGE"
+    assert result.state_name == "AD_CLOSE_PAGE"
 
 
 def test_home_right_ad_page_does_not_steal_plain_home() -> None:
@@ -103,12 +103,18 @@ def test_home_right_ad_page_does_not_steal_plain_home() -> None:
     assert "HOME_RIGHT_AD_PAGE" in DISABLED_SCREEN_STATE_TEMPLATES
 
 
-def test_ad_running_page_requires_explicit_close_marker() -> None:
+def test_ad_close_page_requires_explicit_close_marker() -> None:
     assert detect_current_screen_state_from_detections({}).state_name == "UNKNOWN"
     result = detect_current_screen_state_from_detections({"close_buttons": {"confidence": 0.93}})
 
-    assert result.state_name == "AD_RUNNING_PAGE"
+    assert result.state_name == "AD_CLOSE_PAGE"
     assert "close_buttons" in result.matched_markers
+
+
+def test_ad_running_page_is_not_registered_without_real_playback_marker() -> None:
+    assert "AD_CLOSE_PAGE" in SCREEN_STATE_TEMPLATES
+    assert "AD_RUNNING_PAGE" not in SCREEN_STATE_TEMPLATES
+    assert detect_current_screen_state_from_detections({}).state_name == "UNKNOWN"
 
 
 def test_teammate_state_names_are_preserved_not_renamed() -> None:

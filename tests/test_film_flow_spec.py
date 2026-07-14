@@ -119,6 +119,14 @@ def test_watch_ad_running_waits_without_press_back() -> None:
     assert decision.reason == "film_ad_still_running"
 
 
+def test_watch_ad_unknown_waits_and_keeps_watch_ad() -> None:
+    decision = decide_film_flow_action(step="WATCH_AD", state="UNKNOWN", detections={})
+
+    assert decision.action["name"] == "wait"
+    assert decision.next_step == "WATCH_AD"
+    assert decision.reason == "wait_for_ad_close_marker"
+
+
 def test_watch_ad_close_uses_only_safe_close_marker() -> None:
     decision = decide_film_flow_action(
         step="WATCH_AD",
@@ -132,6 +140,18 @@ def test_watch_ad_close_uses_only_safe_close_marker() -> None:
     assert decision.action["name"] == "tap_marker"
     assert decision.action["params"]["marker"] == "close_end_2"
     assert decision.selected_marker == "close_end_2"
+    assert decision.next_step == "CLOSE_AD_DOING"
+
+
+def test_close_ad_doing_close_page_retries_safe_marker() -> None:
+    decision = decide_film_flow_action(
+        step="CLOSE_AD_DOING",
+        state="AD_CLOSE_PAGE",
+        detections={"close_end_2": _detection("close_end_2", 0.91)},
+    )
+
+    assert decision.action["name"] == "tap_marker"
+    assert decision.action["params"]["marker"] == "close_end_2"
     assert decision.next_step == "CLOSE_AD_DOING"
 
 
@@ -155,7 +175,29 @@ def test_close_ad_total_attempt_limit_waits() -> None:
     )
 
     assert decision.action["name"] == "wait"
-    assert decision.reason == "close_ad_attempt_limit_reached"
+    assert decision.reason == "close_ad_attempt_limit"
+
+
+def test_close_ad_success_page_advances_to_claim_reward() -> None:
+    decision = decide_film_flow_action(
+        step="CLOSE_AD_DOING",
+        state="RIGHT_AD_REWARD_SUCCESS_PAGE",
+        detections={},
+    )
+
+    assert decision.action["name"] == "no_action"
+    assert decision.next_step == "CLAIM_REWARD"
+
+
+def test_claim_reward_success_page_uses_press_back() -> None:
+    decision = decide_film_flow_action(
+        step="CLAIM_REWARD",
+        state="RIGHT_AD_REWARD_SUCCESS_PAGE",
+        detections={},
+    )
+
+    assert decision.action["name"] == "press_back"
+    assert decision.next_step == "RETURN_HOME"
 
 
 def test_reward_page_claim_prefers_get_reward_then_return_home() -> None:
@@ -172,6 +214,13 @@ def test_reward_page_claim_prefers_get_reward_then_return_home() -> None:
 
 def test_return_home_finishes_only_after_home_page() -> None:
     decision = decide_film_flow_action(step="RETURN_HOME", state="HOME_PAGE", detections={})
+
+    assert decision.action["name"] == "no_action"
+    assert decision.next_step == "FINISH"
+
+
+def test_return_home_finishes_after_raw_home_state() -> None:
+    decision = decide_film_flow_action(step="RETURN_HOME", state="HOME", detections={})
 
     assert decision.action["name"] == "no_action"
     assert decision.next_step == "FINISH"
