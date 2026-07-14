@@ -2,30 +2,46 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from external_strategies.scrap_then_ad_reward_v2.film_flow import FILM_STEPS
+from external_strategies.scrap_then_ad_reward_v2.film_flow import FILM_STATES, FILM_STEPS
 from external_strategies.scrap_then_ad_reward_v2.marker_groups import REGISTERED_MARKERS
 from external_strategies.scrap_then_ad_reward_v2.screen_state_detector import (
-    _marker_matches,
     _template_paths_for_marker,
     detect_current_screen_state_from_detections,
 )
 from external_strategies.scrap_then_ad_reward_v2.screen_state_templates import (
+    ACTION_ONLY_MARKERS,
+    ACTIVE_STATE_NAMES,
     DEFAULT_TEMPLATE_DIRS,
     DISABLED_SCREEN_STATE_TEMPLATES,
     SCREEN_STATE_TEMPLATES,
 )
 from external_strategies.scrap_then_ad_reward_v2.state_names import STATE_ALIASES
+from external_strategies.scrap_then_ad_reward_v2.template_sources import (
+    V2_CANONICAL_TEMPLATE_DIRS,
+    collect_canonical_marker_names,
+    marker_name_for_template_path,
+)
 from external_strategies.scrap_then_ad_reward_v2.validation import validate_strategy_config
+from tools.debug_screen_state_v2 import analyze_image, template_search_dirs
 
 
 ROOT = Path(__file__).resolve().parents[1]
 TEAMMATE_DIR = ROOT / "状态判断文件及状态图片"
+TEST_MODES = ROOT / "test modes"
 
 
-def test_official_screen_state_templates_import_and_registry_is_consistent() -> None:
+def test_official_registry_is_active_only() -> None:
     assert SCREEN_STATE_TEMPLATES
-    assert all(key == template.state_name for key, template in SCREEN_STATE_TEMPLATES.items())
-    assert len(SCREEN_STATE_TEMPLATES) == len({template.state_name for template in SCREEN_STATE_TEMPLATES.values()})
+    assert set(SCREEN_STATE_TEMPLATES) <= set(ACTIVE_STATE_NAMES)
+    assert "FILM_ENTRY_PAGE" not in SCREEN_STATE_TEMPLATES
+    assert "AD_RUNNING_PAGE" not in SCREEN_STATE_TEMPLATES
+    assert "REWARD_CONFIRM_PAGE" not in SCREEN_STATE_TEMPLATES
+
+
+def test_disabled_legacy_states_are_documented_not_registered() -> None:
+    for state_name in ("FILM_ENTRY_PAGE", "AD_RUNNING_PAGE", "REWARD_CONFIRM_PAGE"):
+        assert state_name in DISABLED_SCREEN_STATE_TEMPLATES
+        assert state_name not in SCREEN_STATE_TEMPLATES
 
 
 def test_teammate_original_delivery_directory_is_preserved() -> None:
@@ -34,19 +50,31 @@ def test_teammate_original_delivery_directory_is_preserved() -> None:
     assert (TEAMMATE_DIR / "user_templates").is_dir()
 
 
-def test_template_dirs_include_teammate_assets_by_relative_path() -> None:
-    assert "../../状态判断文件及状态图片/user_templates" in DEFAULT_TEMPLATE_DIRS
-    assert "../../状态判断文件及状态图片/page_status_judge_page" in DEFAULT_TEMPLATE_DIRS
-    assert not any(str(ROOT) in directory for directory in DEFAULT_TEMPLATE_DIRS)
-
-
-def test_marker_loader_finds_teammate_marker_subdirectories() -> None:
-    assert _template_paths_for_marker("home_marker", "../../状态判断文件及状态图片/page_status_judge_page")
-    assert _template_paths_for_marker("close_buttons", "../../状态判断文件及状态图片/user_templates")
-    assert _template_paths_for_marker(
-        "tournament_watch_battle_marker",
-        "../../状态判断文件及状态图片/page_status_judge_page",
+def test_v2_template_dirs_are_canonical_only() -> None:
+    expected = [str(path) for path in V2_CANONICAL_TEMPLATE_DIRS]
+    assert [str(path) for path in template_search_dirs()] == expected
+    assert DEFAULT_TEMPLATE_DIRS == [
+        "templates/page_status_judge_page",
+        "templates/user_templates",
+    ]
+    forbidden = (
+        "scrap_ad_battle/templates",
+        "scrap_then_ad_reward/templates",
+        "src/cats_automatic/games/cats/templates",
+        "状态判断文件及状态图片",
     )
+    joined = "\n".join(expected)
+    for text in forbidden:
+        assert text not in joined
+
+
+def test_marker_loader_finds_only_canonical_marker_subdirectories() -> None:
+    home_paths = _template_paths_for_marker("home_marker", "templates/page_status_judge_page")
+    close_paths = _template_paths_for_marker("close_buttons", "templates/user_templates")
+    assert home_paths
+    assert close_paths
+    assert all("scrap_then_ad_reward_v2" in str(path) for path in [*home_paths, *close_paths])
+    assert _template_paths_for_marker("home_marker", "../../状态判断文件及状态图片/page_status_judge_page") == []
 
 
 def test_registry_references_only_registered_markers_for_enabled_states() -> None:
@@ -63,44 +91,20 @@ def test_registry_references_only_registered_markers_for_enabled_states() -> Non
     assert report.errors == []
 
 
-def test_missing_marker_is_reported_by_validation() -> None:
-    bad = next(iter(SCREEN_STATE_TEMPLATES.values()))
-    bad = type(bad)(
-        state_name="BAD_MISSING_MARKER",
-        required_any=["marker_that_was_not_delivered"],
-        threshold=0.8,
-        priority=1,
-        description="bad",
-    )
-
-    report = validate_strategy_config(
-        states=[bad],
-        registered_markers=REGISTERED_MARKERS,
-    )
-
-    assert any("not registered" in error.message for error in report.errors)
+def test_action_only_markers_are_not_state_markers() -> None:
+    assert ACTION_ONLY_MARKERS == frozenset({"ad_entry"})
+    for template in SCREEN_STATE_TEMPLATES.values():
+        required = set(template.required_any) | set(template.required_all)
+        assert required.isdisjoint(ACTION_ONLY_MARKERS)
 
 
-def test_wildcard_rules_match_existing_detector_capability() -> None:
+def test_ad_entry_can_coexist_with_home_without_creating_film_entry_state() -> None:
     result = detect_current_screen_state_from_detections(
-        {"close_user_2_1": {"confidence": 0.91}}
-    )
-
-    assert _marker_matches("close_user_*", "close_user_2_1")
-    assert result.state_name == "AD_CLOSE_PAGE"
-
-
-def test_home_right_ad_page_does_not_steal_plain_home() -> None:
-    result = detect_current_screen_state_from_detections(
-        {
-            "home_marker": {"confidence": 0.91},
-            "underground_park_entrance_buttons": {"confidence": 0.92},
-        }
+        {"main-definate": {"confidence": 0.91}, "ad_entry": {"confidence": 0.90}}
     )
 
     assert result.state_name == "HOME"
-    assert "HOME_RIGHT_AD_PAGE" not in SCREEN_STATE_TEMPLATES
-    assert "HOME_RIGHT_AD_PAGE" in DISABLED_SCREEN_STATE_TEMPLATES
+    assert "FILM_ENTRY_PAGE" not in SCREEN_STATE_TEMPLATES
 
 
 def test_ad_close_page_requires_explicit_close_marker() -> None:
@@ -111,54 +115,74 @@ def test_ad_close_page_requires_explicit_close_marker() -> None:
     assert "close_buttons" in result.matched_markers
 
 
-def test_ad_running_page_is_not_registered_without_real_playback_marker() -> None:
-    assert "AD_CLOSE_PAGE" in SCREEN_STATE_TEMPLATES
-    assert "AD_RUNNING_PAGE" not in SCREEN_STATE_TEMPLATES
-    assert detect_current_screen_state_from_detections({}).state_name == "UNKNOWN"
+def test_reward_success_beats_weak_close_marker_by_exclusion_not_priority_only() -> None:
+    result = detect_current_screen_state_from_detections(
+        {
+            "right_ad_reward_success_buttons": {"confidence": 0.93},
+            "right_ad_reward_success_marker": {"confidence": 0.94},
+            "close_buttons": {"confidence": 0.82},
+        }
+    )
+
+    assert result.state_name == "RIGHT_AD_REWARD_SUCCESS_PAGE"
+    assert result.selection_reason == "single_active_state_match"
 
 
-def test_teammate_state_names_are_preserved_not_renamed() -> None:
-    assert "GET_THREE_BOLTS_MARKER" in DISABLED_SCREEN_STATE_TEMPLATES
-    assert "BATTLE_RUNNING_PAGE" in SCREEN_STATE_TEMPLATES
-    assert "TOURNAMENT_PAGE" in DISABLED_SCREEN_STATE_TEMPLATES
-    assert "TOURNAMENT_WATCH_BATTLE_PAGE" not in SCREEN_STATE_TEMPLATES
-    assert "TOURNAMENT_ADVANCE_FAILED_PAGE" not in SCREEN_STATE_TEMPLATES
+def test_state_conflict_returns_unknown() -> None:
+    result = detect_current_screen_state_from_detections(
+        {
+            "main-definate": {"confidence": 0.91},
+            "watch_ad_film": {"confidence": 0.91},
+        }
+    )
+
+    assert result.state_name == "UNKNOWN"
+    assert result.selection_reason == "state_conflict"
+    assert {item["state"] for item in result.candidate_states} == {"HOME", "FILM_WATCH_PAGE"}
 
 
-def test_teammate_marker_directory_names_are_preserved() -> None:
-    marker_dirs = {
-        path.name
-        for path in (TEAMMATE_DIR / "page_status_judge_page").rglob("*")
-        if path.is_dir()
-    } | {
-        path.name
-        for path in (TEAMMATE_DIR / "user_templates").iterdir()
-        if path.is_dir()
-    }
+def test_nested_template_marker_names_do_not_use_screenshot_stems() -> None:
+    marker_names = collect_canonical_marker_names()
 
-    for marker_name in (
-        "tank_attack_marke",
-        "home_marker",
-        "underground_park_entrance_buttons",
-        "home_right_ad_buttons",
-        "right_ad_reward_success_marker",
-        "close_buttons",
-        "claim_buttons",
-        "confirm_buttons",
-    ):
-        assert marker_name in marker_dirs
+    assert "ad_entry" in marker_names
+    assert "main-definate" in marker_names
+    assert not any(name.startswith("screenshot_") for name in marker_names)
 
 
-def test_film_flow_steps_and_state_aliases_are_not_rewritten_for_teammate_import() -> None:
+def test_marker_name_comes_from_marker_folder() -> None:
+    path = next(_template_paths_for_marker("home_marker", "templates/page_status_judge_page").__iter__())
+    assert marker_name_for_template_path(path, V2_CANONICAL_TEMPLATE_DIRS[0]) == "home_marker"
+
+
+def test_real_home_screenshots_are_home_and_ad_entry_can_be_detected() -> None:
+    for screenshot in sorted((TEST_MODES / "1.game_home_page").glob("*.png")):
+        record = analyze_image(screenshot)
+        assert record["screen_state"] == "HOME"
+        assert record["screen_state"] != "FILM_ENTRY_PAGE"
+    adb_home = analyze_image(TEST_MODES / "1.game_home_page" / "adb_home.png")
+    assert adb_home["screen_state"] == "HOME"
+    assert "ad_entry" in adb_home["generated_detections"]
+
+
+def test_real_ad_playing_without_close_is_unknown() -> None:
+    record = analyze_image(TEST_MODES / "4.ad_playing_page" / "123 (1).png")
+    assert record["screen_state"] == "UNKNOWN"
+
+
+def test_real_close_button_image_is_ad_close_page() -> None:
+    record = analyze_image(TEST_MODES / "5.ad_close_button_page" / "close_buttons" / "2 (1).png")
+    assert record["screen_state"] == "AD_CLOSE_PAGE"
+
+
+def test_real_reward_success_page_is_not_stolen_by_close_page() -> None:
+    record = analyze_image(TEST_MODES / "6.ad_reward_page" / "4ff3a65555b4fb3d657a180ba322a8c6.png")
+    assert record["screen_state"] == "RIGHT_AD_REWARD_SUCCESS_PAGE"
+
+
+def test_film_flow_steps_and_state_aliases_use_current_state_names() -> None:
     assert "ENTER_FILM" in FILM_STEPS
+    assert "FILM_WATCH_PAGE" in FILM_STATES
+    assert "AD_RUNNING_PAGE" not in FILM_STATES
     assert STATE_ALIASES["HOME_PAGE"] == "HOME"
-    assert STATE_ALIASES["AD_CLOSE_PAGE"] == "AD_RUNNING_PAGE"
-    assert "FILM_WATCH_PAGE" not in STATE_ALIASES
-    assert "RIGHT_AD_REWARD_SUCCESS_PAGE" not in STATE_ALIASES
-
-
-def test_no_adb_or_click_allow_list_change_is_needed() -> None:
-    from cats_automatic.actions import DEFAULT_TAP_MARKER_ALLOW_LIST
-
-    assert "close_buttons" not in DEFAULT_TAP_MARKER_ALLOW_LIST
-    assert "home_right_ad_buttons" not in DEFAULT_TAP_MARKER_ALLOW_LIST
+    assert "AD_CLOSE_PAGE" not in STATE_ALIASES
+    assert STATE_ALIASES["REWARD_PAGE"] == "RIGHT_AD_REWARD_SUCCESS_PAGE"

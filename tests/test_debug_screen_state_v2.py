@@ -7,25 +7,25 @@ import pytest
 from PIL import Image, ImageDraw
 
 from external_strategies.scrap_then_ad_reward_v2.screen_state_detector import (
+    _template_paths_for_marker,
     detect_current_screen_state_from_detections,
 )
 from tools import debug_screen_state_v2
 
 
-BATTLE_BUTTON_TEMPLATE = Path("external_strategies/scrap_ad_battle/templates/battle_button.png")
-SCRAP_ENTRY_TEMPLATE = Path("external_strategies/scrap_ad_battle/templates/scrap_entry.png")
-AD_ENTRY_TEMPLATE = Path("src/cats_automatic/games/cats/templates/ad-entry.png")
+HOME_TEMPLATE = _template_paths_for_marker("main-definate")[0]
+AD_ENTRY_TEMPLATE = _template_paths_for_marker("ad_entry")[0]
 
 
 def test_debug_tool_handles_single_image(tmp_path: Path) -> None:
-    image = _screen_with_template(tmp_path / "screen.png", BATTLE_BUTTON_TEMPLATE)
+    image = _screen_with_template(tmp_path / "screen.png", HOME_TEMPLATE)
 
     record = debug_screen_state_v2.analyze_image(image)
 
-    assert record["screen_state"] == "SCRAP_BATTLE_PAGE"
+    assert record["screen_state"] == "HOME"
     assert record["confidence"] >= 0.80
-    assert "battle_button" in record["matched_markers"]
-    assert record["best_marker"] == "battle_button"
+    assert "main-definate" in record["matched_markers"]
+    assert record["best_marker"] == "main-definate"
     assert record["action_template"]["decision"] == "no_action"
     assert record["loaded_template_total"] > 0
     assert record["top_detections"]
@@ -34,8 +34,8 @@ def test_debug_tool_handles_single_image(tmp_path: Path) -> None:
 def test_debug_tool_handles_run_dir_and_writes_outputs(tmp_path: Path) -> None:
     run_dir = tmp_path / "run-001"
     screenshots = run_dir / "screenshots"
-    _screen_with_template(screenshots / "loop-001.png", BATTLE_BUTTON_TEMPLATE)
-    _screen_with_template(screenshots / "loop-002.png", BATTLE_BUTTON_TEMPLATE)
+    _screen_with_template(screenshots / "loop-001.png", HOME_TEMPLATE)
+    _screen_with_template(screenshots / "loop-002.png", HOME_TEMPLATE)
 
     records = debug_screen_state_v2.analyze_run(run_dir)
 
@@ -49,26 +49,20 @@ def test_debug_tool_handles_run_dir_and_writes_outputs(tmp_path: Path) -> None:
         json.loads(line)
         for line in journal_path.read_text(encoding="utf-8").splitlines()
     ]
-    assert [record["screen_state"] for record in journal_records] == [
-        "SCRAP_BATTLE_PAGE",
-        "SCRAP_BATTLE_PAGE",
-    ]
+    assert [record["screen_state"] for record in journal_records] == ["HOME", "HOME"]
     report = report_path.read_text(encoding="utf-8")
-    assert "当前界面状态: SCRAP_BATTLE_PAGE" in report
+    assert "当前界面状态: HOME" in report
     assert "前 20 个最高置信度 detection" in report
 
 
-def test_debug_tool_cli_single_image_prints_no_action(
-    tmp_path: Path,
-    capsys,
-) -> None:
-    image = _screen_with_template(tmp_path / "screen.png", BATTLE_BUTTON_TEMPLATE)
+def test_debug_tool_cli_single_image_prints_no_action(tmp_path: Path, capsys) -> None:
+    image = _screen_with_template(tmp_path / "screen.png", HOME_TEMPLATE)
 
     exit_code = debug_screen_state_v2.main(["--image", str(image)])
 
     output = capsys.readouterr().out
     assert exit_code == 0
-    assert "当前界面状态: SCRAP_BATTLE_PAGE" in output
+    assert "当前界面状态: HOME" in output
     assert "动作模板: no_action" in output
 
 
@@ -93,7 +87,6 @@ def test_simple_image_and_template_match_above_090(tmp_path: Path) -> None:
 def test_fake_home_detections_return_home() -> None:
     result = detect_current_screen_state_from_detections(
         {
-            "scrap_entry": {"confidence": 0.96},
             "ad_entry": {"confidence": 0.95},
             "main-definate": {"confidence": 0.95},
         }
@@ -102,13 +95,12 @@ def test_fake_home_detections_return_home() -> None:
     assert result.state_name == "HOME"
 
 
-def test_loop_image_detects_scrap_entry_ad_entry_and_home(tmp_path: Path) -> None:
-    image = _home_screen_with_scrap_and_ad_entry(tmp_path / "loop-001.png")
+def test_loop_image_detects_ad_entry_and_home(tmp_path: Path) -> None:
+    image = _home_screen_with_main_and_ad_entry(tmp_path / "loop-001.png")
 
     record = debug_screen_state_v2.analyze_image(image)
 
     assert record["screen_state"] == "HOME"
-    assert record["generated_detections"]["scrap_entry"]["confidence"] > 0.90
     assert record["generated_detections"]["ad_entry"]["confidence"] > 0.90
     assert record["generated_detections"]["main-definate"]["confidence"] > 0.90
     assert "main-definate" in record["matched_markers"]
@@ -131,7 +123,7 @@ def test_image_read_failure_outputs_chinese_error(tmp_path: Path) -> None:
     warnings: list[str] = []
 
     with pytest.raises(OSError):
-        debug_screen_state_v2.read_image_size(bad_image, "截图", warnings)
+        debug_screen_state_v2.read_image_size(bad_image, "screenshot", warnings)
 
     assert any("图片读取失败" in warning for warning in warnings)
 
@@ -152,12 +144,12 @@ def _screen_with_template(path: Path, template_path: Path) -> Path:
     return path
 
 
-def _home_screen_with_scrap_and_ad_entry(path: Path) -> Path:
+def _home_screen_with_main_and_ad_entry(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    scrap_template = Image.open(SCRAP_ENTRY_TEMPLATE).convert("RGB")
+    main_template = Image.open(HOME_TEMPLATE).convert("RGB")
     ad_template = Image.open(AD_ENTRY_TEMPLATE).convert("RGB")
     screen = Image.new("RGB", (900, 900), "white")
-    screen.paste(scrap_template, (40, 60))
+    screen.paste(main_template, (40, 60))
     screen.paste(ad_template, (420, 60))
     screen.save(path)
     return path

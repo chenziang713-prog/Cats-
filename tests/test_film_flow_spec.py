@@ -31,8 +31,9 @@ def test_film_flow_steps_and_states_match_spec() -> None:
         "RETURN_HOME",
         "FINISH",
     )
-    assert "FILM_SELECT_PAGE" in FILM_STATES
+    assert "FILM_WATCH_PAGE" in FILM_STATES
     assert "AD_CLOSE_PAGE" in FILM_STATES
+    assert "AD_RUNNING_PAGE" not in FILM_STATES
 
 
 def test_film_flow_rules_validate_with_draft_allow_list_only() -> None:
@@ -58,8 +59,6 @@ def test_film_business_markers_are_not_enabled_in_production_allow_list() -> Non
 def test_unresolved_detector_questions_are_explicit() -> None:
     joined = "\n".join(FILM_UNRESOLVED_CONFIRMATIONS)
 
-    assert "FILM_SELECT_PAGE" in joined
-    assert "REWARD_PAGE" in joined
     assert "4 close-ad click limit" in joined
 
 
@@ -92,7 +91,7 @@ def test_enter_film_missing_ad_entry_waits() -> None:
 
 
 def test_select_reward_missing_optional_marker_does_not_block() -> None:
-    decision = decide_film_flow_action(step="SELECT_REWARD", state="FILM_SELECT_PAGE", detections={})
+    decision = decide_film_flow_action(step="SELECT_REWARD", state="FILM_WATCH_PAGE", detections={})
 
     assert decision.action["name"] == "no_action"
     assert decision.next_step == "START_AD"
@@ -102,21 +101,13 @@ def test_select_reward_missing_optional_marker_does_not_block() -> None:
 def test_start_ad_taps_watch_ad_film_and_waits_for_confirmation() -> None:
     decision = decide_film_flow_action(
         step="START_AD",
-        state="FILM_SELECT_PAGE",
+        state="FILM_WATCH_PAGE",
         detections={"watch_ad_film": _detection("watch_ad_film", 0.93)},
     )
 
     assert decision.action["name"] == "tap_marker"
     assert decision.action["params"]["marker"] == "watch_ad_film"
     assert decision.next_step == "START_AD"
-
-
-def test_watch_ad_running_waits_without_press_back() -> None:
-    decision = decide_film_flow_action(step="WATCH_AD", state="AD_RUNNING_PAGE", detections={})
-
-    assert decision.action["name"] == "wait"
-    assert decision.next_step == "WATCH_AD"
-    assert decision.reason == "film_ad_still_running"
 
 
 def test_watch_ad_unknown_waits_and_keeps_watch_ad() -> None:
@@ -197,18 +188,6 @@ def test_claim_reward_success_page_uses_press_back() -> None:
     )
 
     assert decision.action["name"] == "press_back"
-    assert decision.next_step == "RETURN_HOME"
-
-
-def test_reward_page_claim_prefers_get_reward_then_return_home() -> None:
-    decision = decide_film_flow_action(
-        step="CLAIM_REWARD",
-        state="REWARD_PAGE",
-        detections={"get_reward": _detection("get_reward", 0.92)},
-    )
-
-    assert decision.action["name"] == "tap_marker"
-    assert decision.action["params"]["marker"] == "get_reward"
     assert decision.next_step == "RETURN_HOME"
 
 

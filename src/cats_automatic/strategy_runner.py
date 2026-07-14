@@ -192,7 +192,7 @@ class StrategyRunner:
             )
             self._record_error_popup_events(loop_index)
             if decision is None:
-                decision = self._consume_pending_recovery(loop_index, frame.path)
+                decision = self._consume_pending_recovery(loop_index, frame.path, detections)
                 if decision is None:
                     decision = self.strategy.decide(context)
                     if self.run_recorder is not None and hasattr(
@@ -352,6 +352,8 @@ class StrategyRunner:
     ) -> bool:
         state_before = str(getattr(self.strategy, "state", "unknown"))
         if decision.kind == "wait":
+            if self.run_recorder is not None and decision.reason in {"battle_wait", "ad_wait"}:
+                self.run_recorder.record_strategy_wait_started(decision.reason, decision.wait_seconds)
             action_name = decision.action_name or "wait"
             action_result = execute_action(
                 {
@@ -416,6 +418,8 @@ class StrategyRunner:
                 else None
             )
             self._record_action(decision, action_result, detection, None)
+            if self.run_recorder is not None and decision.reason in {"battle_wait", "ad_wait"}:
+                self.run_recorder.record_strategy_wait_finished(decision.reason, False)
             self._notify_action_result(decision, action_result)
             self._register_watchdog_action(decision, action_result, state_before)
             return True
@@ -980,12 +984,27 @@ class StrategyRunner:
         self,
         loop_index: int,
         screenshot_path: Path,
+        detections: dict[str, DetectionResult],
     ) -> StrategyDecision | None:
         plan = self.stuck_recovery.consume_pending_recovery(
             loop_index=loop_index,
             screenshot_path=str(screenshot_path),
         )
         if plan is None or plan.decision is None:
+            return None
+        workflow_targets = _workflow_target_names(detections)
+        if workflow_targets:
+            if self.run_recorder is not None:
+                self.run_recorder.event(
+                    "recovery_action_skipped_for_workflow_target",
+                    loop=loop_index,
+                    cycle_index=self._current_cycle_index,
+                    stuck_reason=plan.stuck_reason,
+                    recovery_level=plan.recovery_level,
+                    recovery_action=plan.recovery_action,
+                    workflow_targets=workflow_targets,
+                    screenshot_path=str(screenshot_path),
+                )
             return None
         if self.run_recorder is not None:
             self.run_recorder.event(
@@ -1091,6 +1110,27 @@ def _to_detection_result(
         size=match.size,
         scale=match.scale,
         threshold=target.threshold,
+    )
+
+
+def _workflow_target_names(detections: dict[str, DetectionResult]) -> list[str]:
+    known = {
+        "ad_entry",
+        "battle_button",
+        "battle_result_popup",
+        "confirm_button",
+        "page_marker",
+        "reward_confirm_marker",
+        "scrap_entry",
+        "scrap_next_button",
+        "scrap_watch_ad_button",
+        "skip_button",
+        "watch_ad_button",
+    }
+    return sorted(
+        name
+        for name in detections
+        if name in known or name.startswith("close_end_") or name.startswith("close_user_")
     )
 
 

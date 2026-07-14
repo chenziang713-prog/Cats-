@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
-from collections import Counter, defaultdict
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -17,39 +16,21 @@ for path in (REPO_ROOT, SRC_ROOT):
     if path_text not in sys.path:
         sys.path.insert(0, path_text)
 
-from cats_automatic.vision import MatchResult, load_image, match_template
+from cats_automatic.vision import load_image, match_template
 from external_strategies.scrap_then_ad_reward_v2.screen_state_detector import (
     detect_current_screen_state_from_detections,
 )
-from external_strategies.scrap_then_ad_reward_v2.screen_state_types import (
-    ScreenStateResult,
-)
-from external_strategies.scrap_then_ad_reward_v2.state_action_templates import (
-    handle_screen_state,
+from external_strategies.scrap_then_ad_reward_v2.screen_state_types import ScreenStateResult
+from external_strategies.scrap_then_ad_reward_v2.state_action_templates import handle_screen_state
+from external_strategies.scrap_then_ad_reward_v2.template_sources import (
+    IMAGE_SUFFIXES,
+    V2_CANONICAL_TEMPLATE_DIRS,
+    marker_name_for_template_path,
 )
 
 
 JOURNAL_NAME = "screen_state_journal_v2.jsonl"
 REPORT_NAME = "screen_state_report_v2.txt"
-IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
-REQUIRED_TEMPLATE_DIRS = (
-    REPO_ROOT / "external_strategies" / "scrap_ad_battle" / "templates",
-    REPO_ROOT / "external_strategies" / "scrap_then_ad_reward" / "templates",
-    REPO_ROOT / "user_templates",
-    REPO_ROOT / "状态判断文件及状态图片" / "page_status_judge_page",
-    REPO_ROOT / "状态判断文件及状态图片" / "user_templates",
-)
-SUPPLEMENTAL_TEMPLATE_DIRS = (
-    REPO_ROOT / "src" / "cats_automatic" / "games" / "cats" / "templates",
-    REPO_ROOT / "templates",
-)
-SPECIAL_MARKER_NAMES = {
-    "ad_close_text": "close_ad",
-    "ad_close_x": "close_ad",
-    "ad_entry": "ad_entry",
-    "ad_confirm_claim": "confirm_button",
-    "watch_ad_button": "watch_ad_button",
-}
 
 
 @dataclass(frozen=True)
@@ -81,7 +62,7 @@ def analyze_image(
 ) -> dict[str, Any]:
     image_path = image_path.resolve()
     debug_lines: list[str] = []
-    screen_size = read_image_size(image_path, "截图", debug_lines)
+    screen_size = read_image_size(image_path, "screenshot", debug_lines)
     template_dirs = template_search_dirs(extra_template_dirs)
     templates = load_template_candidates(template_dirs, debug_lines)
     detections, template_scores = build_detections_from_image(
@@ -120,7 +101,7 @@ def analyze_image(
 
 
 def template_search_dirs(extra_template_dirs: Iterable[Path] = ()) -> list[Path]:
-    dirs = [*REQUIRED_TEMPLATE_DIRS, *SUPPLEMENTAL_TEMPLATE_DIRS]
+    dirs = [*V2_CANONICAL_TEMPLATE_DIRS]
     dirs.extend(Path(path) for path in extra_template_dirs)
     resolved: list[Path] = []
     for directory in dirs:
@@ -140,18 +121,17 @@ def load_template_candidates(
         if not directory.exists():
             debug_lines.append(f"中文提示：模板目录不存在，已跳过：{directory}")
             continue
-
         paths = sorted(
-            path for path in directory.rglob("*")
+            path
+            for path in directory.rglob("*")
             if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
         )
         if not paths:
             debug_lines.append(f"中文提示：模板目录为空：{directory}")
             continue
-
         for path in paths:
             try:
-                size = read_image_size(path, "模板", debug_lines)
+                size = read_image_size(path, "template", debug_lines)
             except OSError:
                 continue
             candidates.append(
@@ -168,34 +148,7 @@ def load_template_candidates(
 
 
 def marker_name_for_template(path: Path, source_dir: Path) -> str:
-    relative_parts = path.relative_to(source_dir).parts
-    if source_dir.name == "page_status_judge_page":
-        if len(relative_parts) >= 3:
-            return relative_parts[-2]
-        if len(relative_parts) >= 2:
-            return normalize_marker_stem(relative_parts[0])
-    if source_dir.parent.name == "状态判断文件及状态图片" and source_dir.name == "user_templates":
-        if len(relative_parts) >= 2:
-            return relative_parts[0]
-
-    parent_names = {part.lower() for part in relative_parts[:-1]}
-    safe_stem = normalize_marker_stem(path.stem)
-
-    if "close_buttons" in parent_names:
-        return safe_stem if safe_stem.startswith("close_user_") else f"close_user_{safe_stem}"
-    if "watch_buttons" in parent_names:
-        return safe_stem if safe_stem.startswith("watch_user_") else f"watch_user_{safe_stem}"
-    if "pre_watch_optional" in parent_names:
-        return "pre_watch_optional"
-    if "error_popups" in parent_names:
-        return "error_popup"
-    if "error_buttons" in parent_names:
-        return "retry_button"
-    return SPECIAL_MARKER_NAMES.get(safe_stem, safe_stem)
-
-
-def normalize_marker_stem(stem: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9]+", "_", stem).strip("_").lower()
+    return marker_name_for_template_path(path, source_dir)
 
 
 def build_detections_from_image(
@@ -244,48 +197,23 @@ def build_detections_from_image(
                 "center": match.center,
                 "template_path": str(template.path),
             }
-    add_synthetic_detections(detections, debug_lines)
     return detections, scores
-
-
-def add_synthetic_detections(
-    detections: dict[str, dict[str, Any]],
-    debug_lines: list[str],
-) -> None:
-    scrap_entry = detections.get("scrap_entry")
-    ad_entry = detections.get("ad_entry")
-    if (
-        scrap_entry is not None
-        and ad_entry is not None
-        and float(scrap_entry["confidence"]) >= 0.80
-        and float(ad_entry["confidence"]) >= 0.80
-        and "main-definate" not in detections
-    ):
-        confidence = min(float(scrap_entry["confidence"]), float(ad_entry["confidence"]))
-        detections["main-definate"] = {
-            "confidence": confidence,
-            "center": ad_entry.get("center"),
-            "template_path": "synthetic:scrap_entry+ad_entry",
-        }
-        debug_lines.append(
-            "中文提示：同时命中 scrap_entry 和 ad_entry，已生成 HOME 规则需要的 main-definate 标志。"
-        )
 
 
 def read_image_size(path: Path, label: str, debug_lines: list[str] | None = None) -> tuple[int, int]:
     debug_lines = debug_lines if debug_lines is not None else []
     if not path.exists():
-        message = f"中文错误：{label}图片不存在：{path}"
+        message = f"中文错误：{label} 图片不存在：{path}"
         debug_lines.append(message)
         raise FileNotFoundError(message)
     try:
         image = load_image(path)
     except Exception as exc:
-        message = f"中文错误：{label}图片读取失败：{path}；原因：{exc}"
+        message = f"中文错误：{label} 图片读取失败：{path}；原因：{exc}"
         debug_lines.append(message)
         raise OSError(message) from exc
     if image is None or len(getattr(image, "shape", ())) < 2:
-        message = f"中文错误：{label}图片为空或格式异常：{path}"
+        message = f"中文错误：{label} 图片为空或格式异常：{path}"
         debug_lines.append(message)
         raise OSError(message)
     height, width = int(image.shape[0]), int(image.shape[1])
@@ -304,14 +232,6 @@ def result_record(
     debug_lines: list[str],
 ) -> dict[str, Any]:
     marker_counts = Counter(template.marker_name for template in templates)
-    template_sizes = [
-        {
-            "marker_name": template.marker_name,
-            "path": str(template.path),
-            "size": list(template.size),
-        }
-        for template in templates
-    ]
     all_scores = sorted(
         (
             {
@@ -337,6 +257,11 @@ def result_record(
         "missing_markers": list(result.missing_markers),
         "best_marker": result.best_marker,
         "reason": result.reason,
+        "candidate_states": list(result.candidate_states),
+        "selected_state": result.selected_state,
+        "selection_reason": result.selection_reason,
+        "result_loaded_template_dirs": list(result.loaded_template_dirs),
+        "active_state_names": list(result.active_state_names),
         "raw_scores": dict(result.raw_scores),
         "generated_detections": {
             name: {
@@ -350,7 +275,10 @@ def result_record(
         "loaded_template_dirs": [str(path) for path in template_dirs],
         "loaded_template_total": len(templates),
         "marker_template_counts": dict(sorted(marker_counts.items())),
-        "template_sizes": template_sizes,
+        "template_sizes": [
+            {"marker_name": template.marker_name, "path": str(template.path), "size": list(template.size)}
+            for template in templates
+        ],
         "template_scores": all_scores,
         "top_detections": all_scores[:20],
         "debug_warnings": list(debug_lines),
@@ -421,6 +349,9 @@ def report_lines_for_record(record: dict[str, Any], *, index: int | None = None)
         f"排除标志: {', '.join(record['excluded_markers']) or 'none'}",
         f"缺失标志: {', '.join(record['missing_markers']) or 'none'}",
         f"best_marker: {record['best_marker'] or 'none'}",
+        f"candidate_states: {record['candidate_states']}",
+        f"selected_state: {record['selected_state']}",
+        f"selection_reason: {record['selection_reason']}",
         f"reason: {record['reason']}",
         f"动作模板: {record['action_template'].get('decision', 'unknown')}",
         f"已加载模板总数: {record['loaded_template_total']}",
@@ -428,10 +359,7 @@ def report_lines_for_record(record: dict[str, Any], *, index: int | None = None)
     ]
     lines.extend(f"  - {path}" for path in record["loaded_template_dirs"])
     lines.append("每个 marker_name 的模板数量:")
-    lines.extend(
-        f"  - {name}: {count}"
-        for name, count in record["marker_template_counts"].items()
-    )
+    lines.extend(f"  - {name}: {count}" for name, count in record["marker_template_counts"].items())
     lines.append("前 20 个最高置信度 detection:")
     for item in record["top_detections"]:
         lines.append(

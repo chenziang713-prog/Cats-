@@ -54,3 +54,8 @@ class ScreenStateResult:
     reason: str = ""
     raw_scores: dict[str, float] = field(default_factory=dict)
     screenshot_path: str | None = None
+    candidate_states: list[dict[str, object]] = field(default_factory=list)
+    selected_state: str | None = None
+    selection_reason: str = ""
+    loaded_template_dirs: list[str] = field(default_factory=list)
+    active_state_names: list[str] = field(default_factory=list)

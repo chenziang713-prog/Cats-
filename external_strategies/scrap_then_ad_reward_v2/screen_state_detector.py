@@ -4,11 +4,13 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from .screen_state_templates import SCREEN_STATE_TEMPLATES
+from .screen_state_templates import ACTIVE_STATE_NAMES, SCREEN_STATE_TEMPLATES
 from .screen_state_types import MarkerMatchResult, ScreenStateResult, ScreenStateTemplate
-
-
-IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
+from .template_sources import (
+    V2_CANONICAL_TEMPLATE_DIRS,
+    collect_canonical_marker_names,
+    template_paths_for_marker,
+)
 
 
 def detect_current_screen_state_from_detections(
@@ -17,21 +19,39 @@ def detect_current_screen_state_from_detections(
     *,
     screenshot_path: str | None = None,
 ) -> ScreenStateResult:
-    """基于现有 detections 判断当前界面状态。
-
-    这里优先复用 runner 已经产出的模板匹配结果，不重新截图、不点击、不修改流程。
-    """
-
     registry = template_registry or SCREEN_STATE_TEMPLATES
-    results = [
+    active_registry = {
+        name: template
+        for name, template in registry.items()
+        if name in ACTIVE_STATE_NAMES and name != "UNKNOWN"
+    }
+    evaluated = [
         _evaluate_template(template, detections, screenshot_path=screenshot_path)
-        for template in registry.values()
-        if template.state_name != "UNKNOWN"
+        for template in active_registry.values()
     ]
-    matches = [result for result in results if result.matched]
+    matches = [result for result in evaluated if result.matched]
+    candidate_states = [_candidate_record(result) for result in matches]
     if not matches:
-        return _unknown_result("没有任何状态命中", screenshot_path=screenshot_path)
-    return max(matches, key=lambda result: (result.priority, result.confidence))
+        return _unknown_result(
+            "no active state markers matched",
+            screenshot_path=screenshot_path,
+            candidate_states=candidate_states,
+            selection_reason="no_state_match",
+        )
+    if len(matches) > 1:
+        return _unknown_result(
+            "state_conflict",
+            screenshot_path=screenshot_path,
+            candidate_states=candidate_states,
+            selection_reason="state_conflict",
+        )
+    selected = matches[0]
+    return _with_selection_metadata(
+        selected,
+        candidate_states=candidate_states,
+        selected_state=selected.state_name,
+        selection_reason="single_active_state_match",
+    )
 
 
 def detect_current_screen_state(
@@ -39,20 +59,20 @@ def detect_current_screen_state(
     template_registry: Mapping[str, ScreenStateTemplate] | None = None,
     matcher: Any | None = None,
 ) -> ScreenStateResult:
-    """统一状态识别入口。
-
-    如果传入 matcher，则尝试按模板配置做匹配；模板文件不存在时安全跳过。
-    如果没有 matcher，则返回 UNKNOWN，避免第一阶段重复截图或误触真实流程。
-    """
-
     registry = template_registry or SCREEN_STATE_TEMPLATES
     if screenshot is not None and not Path(screenshot).exists():
-        return _unknown_result("截图文件不存在，已安全跳过模板匹配", screenshot_path=_path_text(screenshot))
+        return _unknown_result(
+            "screenshot file does not exist; skipped template matching",
+            screenshot_path=_path_text(screenshot),
+        )
     if matcher is None:
-        return _unknown_result("未提供 matcher，第一阶段不重复截图匹配", screenshot_path=_path_text(screenshot))
+        return _unknown_result(
+            "matcher was not provided; skipped template matching",
+            screenshot_path=_path_text(screenshot),
+        )
+
     detections: dict[str, MarkerMatchResult] = {}
-    marker_names = _collect_marker_names(registry.values())
-    for marker_name in marker_names:
+    for marker_name in collect_canonical_marker_names():
         marker_result = _match_marker_safely(marker_name, screenshot, registry.values(), matcher)
         if marker_result is not None and marker_result.matched:
             detections[marker_name] = marker_result
@@ -64,19 +84,19 @@ def detect_current_screen_state(
 
 
 def explain_screen_state_result(result: ScreenStateResult) -> str:
-    """输出中文调试说明，方便日志里直接查看识别依据。"""
-
-    matched = ", ".join(result.matched_markers) if result.matched_markers else "无"
-    excluded = ", ".join(result.excluded_markers) if result.excluded_markers else "无"
-    missing = ", ".join(result.missing_markers) if result.missing_markers else "无"
+    matched = ", ".join(result.matched_markers) if result.matched_markers else "none"
+    excluded = ", ".join(result.excluded_markers) if result.excluded_markers else "none"
+    missing = ", ".join(result.missing_markers) if result.missing_markers else "none"
     return "\n".join(
         [
-            f"当前界面判断：{result.state_name}",
-            f"置信度：{result.confidence:.3f}",
-            f"命中标志：{matched}",
-            f"缺失标志：{missing}",
-            f"排除标志：{excluded}",
-            f"原因：{result.reason}",
+            f"current screen state: {result.state_name}",
+            f"confidence: {result.confidence:.3f}",
+            f"matched_markers: {matched}",
+            f"missing_markers: {missing}",
+            f"excluded_markers: {excluded}",
+            f"best_marker: {result.best_marker or 'none'}",
+            f"selection_reason: {result.selection_reason or result.reason}",
+            f"reason: {result.reason}",
         ]
     )
 
@@ -100,18 +120,19 @@ def _evaluate_template(
     required_names = list(dict.fromkeys([*template.required_any, *template.required_all]))
     matched_markers = _matched_names(required_names, raw_scores, template.threshold)
     missing_markers = [
-        name for name in required_names
+        name
+        for name in required_names
         if name not in matched_markers and not _pattern_has_match(name, raw_scores, template.threshold)
     ]
     confidence = max([raw_scores[name] for name in matched_markers], default=0.0)
     best_marker = None if not matched_markers else max(matched_markers, key=lambda name: raw_scores[name])
 
     if has_excluded:
-        reason = f"命中排除标志：{', '.join(excluded_markers)}"
+        reason = f"excluded marker matched: {', '.join(excluded_markers)}"
     elif matched:
-        reason = f"命中{template.description}必要标志"
+        reason = f"matched required marker(s) for {template.description}"
     else:
-        reason = "必要标志未命中"
+        reason = "required markers did not match"
 
     return ScreenStateResult(
         state_name=template.state_name,
@@ -125,6 +146,8 @@ def _evaluate_template(
         reason=reason,
         raw_scores=raw_scores,
         screenshot_path=screenshot_path,
+        loaded_template_dirs=[str(path) for path in V2_CANONICAL_TEMPLATE_DIRS],
+        active_state_names=sorted(ACTIVE_STATE_NAMES),
     )
 
 
@@ -165,17 +188,6 @@ def _confidence(detection: Any) -> float:
     return float(getattr(detection, "confidence", 0.0))
 
 
-def _collect_marker_names(templates: Any) -> list[str]:
-    names: list[str] = []
-    for template in templates:
-        for marker_name in [*template.required_any, *template.required_all, *template.exclude_any]:
-            if marker_name.endswith("*"):
-                continue
-            if marker_name not in names:
-                names.append(marker_name)
-    return names
-
-
 def _match_marker_safely(
     marker_name: str,
     screenshot: str | Path | None,
@@ -183,57 +195,79 @@ def _match_marker_safely(
     matcher: Any,
 ) -> MarkerMatchResult | None:
     best: MarkerMatchResult | None = None
-    for template in templates:
-        for template_dir in template.template_dirs:
-            for template_path in _template_paths_for_marker(marker_name, template_dir):
-                try:
-                    result = matcher(screenshot, template_path, template.threshold)
-                except TypeError:
-                    result = matcher(screenshot=screenshot, template_path=template_path, threshold=template.threshold)
-                confidence = _confidence(result)
-                candidate = MarkerMatchResult(
-                    marker_name=marker_name,
-                    matched=confidence >= template.threshold,
-                    confidence=confidence,
-                    center=getattr(result, "center", None),
-                    template_path=str(template_path),
-                )
-                if best is None or candidate.confidence > best.confidence:
-                    best = candidate
+    threshold = min((template.threshold for template in templates), default=0.80)
+    for template_path in template_paths_for_marker(marker_name):
+        try:
+            result = matcher(screenshot, template_path, threshold)
+        except TypeError:
+            result = matcher(screenshot=screenshot, template_path=template_path, threshold=threshold)
+        confidence = _confidence(result)
+        candidate = MarkerMatchResult(
+            marker_name=marker_name,
+            matched=confidence >= threshold,
+            confidence=confidence,
+            center=getattr(result, "center", None),
+            template_path=str(template_path),
+        )
+        if best is None or candidate.confidence > best.confidence:
+            best = candidate
     return best
 
 
-def _template_paths_for_marker(marker_name: str, template_dir: str | Path) -> list[Path]:
+def _template_paths_for_marker(marker_name: str, template_dir: str | Path | None = None) -> list[Path]:
+    if template_dir is None:
+        return template_paths_for_marker(marker_name)
     base = (Path(__file__).resolve().parent / template_dir).resolve()
-    if not base.exists() or not base.is_dir():
+    if base not in {path.resolve() for path in V2_CANONICAL_TEMPLATE_DIRS}:
         return []
-
-    candidates: list[Path] = []
-    for suffix in IMAGE_SUFFIXES:
-        direct_file = base / f"{marker_name}{suffix}"
-        if direct_file.is_file():
-            candidates.append(direct_file)
-
-    direct_dir = base / marker_name
-    if direct_dir.is_dir():
-        candidates.extend(_image_files(direct_dir))
-
-    for marker_dir in base.rglob(marker_name):
-        if marker_dir.is_dir() and marker_dir != direct_dir:
-            candidates.extend(_image_files(marker_dir))
-
-    return sorted(dict.fromkeys(path.resolve() for path in candidates))
+    return template_paths_for_marker(marker_name, (base,))
 
 
-def _image_files(directory: Path) -> list[Path]:
-    return sorted(
-        path
-        for path in directory.rglob("*")
-        if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
+def _candidate_record(result: ScreenStateResult) -> dict[str, object]:
+    return {
+        "state": result.state_name,
+        "confidence": result.confidence,
+        "priority": result.priority,
+        "matched_markers": list(result.matched_markers),
+        "best_marker": result.best_marker,
+        "reason": result.reason,
+    }
+
+
+def _with_selection_metadata(
+    result: ScreenStateResult,
+    *,
+    candidate_states: list[dict[str, object]],
+    selected_state: str | None,
+    selection_reason: str,
+) -> ScreenStateResult:
+    return ScreenStateResult(
+        state_name=result.state_name,
+        matched=result.matched,
+        confidence=result.confidence,
+        priority=result.priority,
+        matched_markers=list(result.matched_markers),
+        missing_markers=list(result.missing_markers),
+        excluded_markers=list(result.excluded_markers),
+        best_marker=result.best_marker,
+        reason=result.reason,
+        raw_scores=dict(result.raw_scores),
+        screenshot_path=result.screenshot_path,
+        candidate_states=candidate_states,
+        selected_state=selected_state,
+        selection_reason=selection_reason,
+        loaded_template_dirs=[str(path) for path in V2_CANONICAL_TEMPLATE_DIRS],
+        active_state_names=sorted(ACTIVE_STATE_NAMES),
     )
 
 
-def _unknown_result(reason: str, *, screenshot_path: str | None = None) -> ScreenStateResult:
+def _unknown_result(
+    reason: str,
+    *,
+    screenshot_path: str | None = None,
+    candidate_states: list[dict[str, object]] | None = None,
+    selection_reason: str = "",
+) -> ScreenStateResult:
     return ScreenStateResult(
         state_name="UNKNOWN",
         matched=False,
@@ -241,6 +275,11 @@ def _unknown_result(reason: str, *, screenshot_path: str | None = None) -> Scree
         priority=-1,
         reason=reason,
         screenshot_path=screenshot_path,
+        candidate_states=candidate_states or [],
+        selected_state="UNKNOWN",
+        selection_reason=selection_reason or reason,
+        loaded_template_dirs=[str(path) for path in V2_CANONICAL_TEMPLATE_DIRS],
+        active_state_names=sorted(ACTIVE_STATE_NAMES),
     )
 
 

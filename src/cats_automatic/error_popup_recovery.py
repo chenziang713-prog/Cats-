@@ -141,6 +141,16 @@ class ErrorPopupRecoveryManager:
             return None
         if self.awaiting_resume:
             return self._resume_decision(context.detections)
+        workflow_targets = _workflow_targets(context.detections)
+        if workflow_targets:
+            self.active = False
+            self._events.append(
+                {
+                    "event": "error_popup_recovery_skipped_for_workflow_target",
+                    "targets": workflow_targets,
+                }
+            )
+            return None
 
         popup = _best(context.detections, "error_popup_")
         button = _best(context.detections, "error_button_")
