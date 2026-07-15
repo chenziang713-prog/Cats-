@@ -43,6 +43,17 @@ REASON_NAMES = {
     "global_stall_detected": "检测到长期无进展",
 }
 
+DECISION_NAMES.update({
+    "tap_marker": "点击目标",
+    "press_back": "按返回键",
+})
+
+REASON_NAMES.update({
+    "pending_effect_waiting_for_confirmation": "已发送动作，等待页面确认",
+    "pending_effect_duplicate_blocked": "已拦截重复动作",
+    "post_ad_network_flashback": "广告结束后页面网络回闪，保持当前阶段等待奖励页",
+})
+
 
 def target_name_cn(name: str) -> str:
     if name.startswith("close_user_") or name.startswith("close_end_") or name == "close_ad":

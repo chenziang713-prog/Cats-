@@ -51,6 +51,81 @@ def test_dry_run_taps_do_not_increment_real_attempt_counters() -> None:
     assert strategy.flow_context.pending_transition == "WATCH_AD"
 
 
+def test_real_entry_tap_blocks_immediate_duplicate() -> None:
+    strategy = Strategy()
+    strategy.flow_context.current_step = "ENTER_FILM"
+    detections = {
+        "main-definate": _detection("main-definate", 0.99),
+        "ad_entry": _detection("ad_entry", 0.93),
+    }
+
+    first = strategy.decide(_context(detections))
+    strategy.on_action_result(first, _result("tap_marker", dry_run=False))
+    second = strategy.decide(_context(detections))
+
+    assert first.action_name == "tap_marker"
+    assert second.action_name == "wait"
+    assert second.reason == "pending_effect_waiting_for_confirmation"
+    assert strategy.flow_context.entry_click_attempts == 1
+
+
+def test_real_entry_tap_retries_once_after_confirmation_timeout() -> None:
+    strategy = Strategy()
+    strategy.flow_context.current_step = "ENTER_FILM"
+    detections = {
+        "main-definate": _detection("main-definate", 0.99),
+        "ad_entry": _detection("ad_entry", 0.93),
+    }
+
+    first = strategy.decide(_context(detections))
+    strategy.on_action_result(first, _result("tap_marker", dry_run=False))
+    assert strategy.flow_context.pending_effect is not None
+    strategy.flow_context.pending_effect = strategy.flow_context.pending_effect._replace(
+        confirmation_deadline=0.0
+    )
+    retry = strategy.decide(_context(detections))
+    strategy.on_action_result(retry, _result("tap_marker", dry_run=False))
+    assert strategy.flow_context.pending_effect is not None
+    strategy.flow_context.pending_effect = strategy.flow_context.pending_effect._replace(
+        confirmation_deadline=0.0
+    )
+    blocked = strategy.decide(_context(detections))
+
+    assert retry.action_name == "tap_marker"
+    assert blocked.action_name == "wait"
+    assert blocked.reason == "pending_effect_duplicate_blocked"
+    assert strategy.flow_context.entry_click_attempts == 2
+
+
+def test_real_watch_tap_blocks_network_flashback_duplicate() -> None:
+    strategy = Strategy()
+    strategy.flow_context.current_step = "START_AD"
+    detections = {"watch_ad_film": _detection("watch_ad_film", 0.93)}
+
+    first = strategy.decide(_context(detections))
+    strategy.on_action_result(first, _result("tap_marker", dry_run=False))
+    second = strategy.decide(_context(detections))
+
+    assert first.action_name == "tap_marker"
+    assert second.action_name == "wait"
+    assert strategy.flow_context.watch_ad_click_attempts == 1
+
+
+def test_reward_back_blocks_immediate_second_back() -> None:
+    strategy = Strategy()
+    strategy.flow_context.current_step = "CLAIM_REWARD"
+    detections = {"get_reward": _detection("get_reward", 0.91)}
+
+    first = strategy.decide(_context(detections))
+    strategy.on_action_result(first, _result("press_back", dry_run=False))
+    second = strategy.decide(_context(detections))
+
+    assert first.action_name == "press_back"
+    assert second.action_name == "wait"
+    assert second.reason == "pending_effect_waiting_for_confirmation"
+    assert strategy.flow_context.reward_click_attempts == 1
+
+
 def test_executed_tap_increments_attempt_counter() -> None:
     strategy = Strategy()
     strategy.flow_context.current_step = "START_AD"

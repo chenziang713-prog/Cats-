@@ -19,17 +19,21 @@ CLICK_RECORD_FIELDS = [
     "timestamp",
     "cycle_index",
     "loop",
+    "decision_id",
     "capture_backend",
     "adb_serial",
     "screenshot_path",
     "decision",
     "action_type",
     "target_name",
+    "marker",
     "confidence",
     "threshold",
     "click_x",
     "click_y",
+    "keycode",
     "reason",
+    "source_fingerprint",
     "max_actions_used",
     "max_actions_limit",
     "close_streak",
@@ -93,6 +97,12 @@ class RunRecorder:
         self.end_time = ""
         self.total_loops = 0
         self.total_clicks = 0
+        self.adb_tap_count = 0
+        self.adb_keyevent_count = 0
+        self.total_executed_actions = 0
+        self.planned_actions = 0
+        self.dry_run_actions = 0
+        self.blocked_duplicate_actions = 0
         self.total_cycles_completed = 0
         self.current_cycle_index = 1
         self.last_cycle_completed_at = ""
@@ -281,13 +291,24 @@ class RunRecorder:
     ) -> None:
         decision_name = decision.action_name or decision.kind
         self.last_decision = decision_name
+        marker = str(decision.action_params.get("marker", "") if decision.action_params else "")
+        clicked_pos = action_result.clicked_pos
         confidence = "" if detection is None else f"{detection.confidence:.3f}"
         effective_threshold = decision.min_click_confidence_override
         if effective_threshold is None and detection is not None:
             effective_threshold = detection.threshold
+        if effective_threshold is None and decision.action_params:
+            raw_threshold = decision.action_params.get("min_confidence")
+            try:
+                effective_threshold = None if raw_threshold is None else float(raw_threshold)
+            except (TypeError, ValueError):
+                effective_threshold = None
         threshold = "" if effective_threshold is None else f"{effective_threshold:.3f}"
-        click_x = "" if detection is None else str(detection.center[0])
-        click_y = "" if detection is None else str(detection.center[1])
+        click_x = "" if clicked_pos is None else str(clicked_pos[0])
+        click_y = "" if clicked_pos is None else str(clicked_pos[1])
+        if detection is not None and clicked_pos is None:
+            click_x = str(detection.center[0])
+            click_y = str(detection.center[1])
         reason = action_result.reason or decision.reason
         action_notes = "; ".join(part for part in [action_result.notes, notes] if part)
         row = {
@@ -295,17 +316,21 @@ class RunRecorder:
             "timestamp": _timestamp(),
             "cycle_index": self.current_cycle_index,
             "loop": loop_index,
+            "decision_id": str(decision.action_params.get("decision_id", "") if decision.action_params else ""),
             "capture_backend": self.capture_backend,
             "adb_serial": self.adb_serial,
             "screenshot_path": self.last_screenshot,
             "decision": decision_name,
             "action_type": action_result.action_type,
-            "target_name": decision.target_name or "",
+            "target_name": decision.target_name or marker,
+            "marker": marker,
             "confidence": confidence,
             "threshold": threshold,
             "click_x": click_x,
             "click_y": click_y,
+            "keycode": "BACK" if decision_name == "press_back" or decision.target_name == "adb_back" else "",
             "reason": reason,
+            "source_fingerprint": str(decision.action_params.get("source_fingerprint", "") if decision.action_params else ""),
             "max_actions_used": max_actions_used,
             "max_actions_limit": "" if self.max_actions_limit is None else self.max_actions_limit,
             "close_streak": "" if close_streak is None else close_streak,
@@ -321,11 +346,21 @@ class RunRecorder:
         self._csv_writer.writerow(row)
         assert self._csv_handle is not None
         self._csv_handle.flush()
-        if action_result.result == "executed" and action_result.action_type in {
-            "adb_tap",
-            "dry_run_click",
+        self.planned_actions += 1
+        if action_result.dry_run:
+            self.dry_run_actions += 1
+        if action_result.result in {"blocked_duplicate", "pending_effect_waiting"} or reason in {
+            "pending_effect_waiting_for_confirmation",
+            "pending_effect_duplicate_blocked",
         }:
+            self.blocked_duplicate_actions += 1
+        if action_result.result == "executed" and action_result.action_type == "adb_tap":
             self.total_clicks += 1
+            self.adb_tap_count += 1
+            self.total_executed_actions += 1
+        if action_result.result == "executed" and action_result.action_type == "adb_keyevent":
+            self.adb_keyevent_count += 1
+            self.total_executed_actions += 1
         if action_result.action_type == "adb_tap" and action_result.result == "executed":
             self.last_adb_tap = {key: str(value) for key, value in row.items()}
         if action_result.action_type == "adb_keyevent" and action_result.result == "executed":
@@ -490,6 +525,12 @@ class RunRecorder:
             f"adb_serial: {self.adb_serial}",
             f"total_loops: {self.total_loops}",
             f"total_clicks: {self.total_clicks}",
+            f"adb_tap_count: {self.adb_tap_count}",
+            f"adb_keyevent_count: {self.adb_keyevent_count}",
+            f"total_executed_actions: {self.total_executed_actions}",
+            f"planned_actions: {self.planned_actions}",
+            f"dry_run_actions: {self.dry_run_actions}",
+            f"blocked_duplicate_actions: {self.blocked_duplicate_actions}",
             f"total_cycles_completed: {self.total_cycles_completed}",
             f"current_cycle_index: {self.current_cycle_index}",
             f"last_cycle_completed_at: {self.last_cycle_completed_at}",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import time
 from collections.abc import Callable
@@ -422,12 +423,13 @@ class StrategyRunner:
             detection = (
                 detections.get(decision.target_name)
                 if decision.target_name is not None
-                else None
+                else detections.get(str(decision.action_params.get("marker", "")))
             )
             self._record_action(decision, action_result, detection, None)
             if self.run_recorder is not None and decision.reason in {"battle_wait", "ad_wait"}:
                 self.run_recorder.record_strategy_wait_finished(decision.reason, False)
             self._notify_action_result(decision, action_result)
+            self._emit_gui_status(decision, action_result)
             self._register_watchdog_action(decision, action_result, state_before)
             return True
         if decision.kind == "stop":
@@ -474,6 +476,7 @@ class StrategyRunner:
                     self.run_recorder.total_loops if self.run_recorder is not None else 0
                 )
             self._notify_action_result(decision, action_result)
+            self._emit_gui_status(decision, action_result)
             return True
         if decision.kind not in {"click", "tap"}:
             print(f"Unknown decision kind: {decision.kind}")
@@ -527,6 +530,7 @@ class StrategyRunner:
         self._register_watchdog_action(decision, action_result, state_before)
         self._update_cycle_state(decision, action_result)
         self._notify_action_result(decision, action_result)
+        self._emit_gui_status(decision, action_result)
         return True
 
     def _is_reward_cycle_completed(self) -> bool:
@@ -659,6 +663,25 @@ class StrategyRunner:
             self._record_error_popup_events(loop_index)
             return
         self._notify_strategy_action_result(decision, action_result)
+
+    def _emit_gui_status(self, decision: StrategyDecision, action_result: ActionResult) -> None:
+        payload = self._strategy_monitor_payload(decision)
+        event = {
+            "event": "flow_status",
+            "run_id": "" if self.run_recorder is None else self.run_recorder.run_id,
+            "loop": 0 if self.run_recorder is None else self.run_recorder.total_loops,
+            "current_step": payload.get("current_step", payload.get("step")),
+            "observed_state": payload.get("observed_state"),
+            "accepted_state": payload.get("accepted_state", payload.get("state")),
+            "decision": decision.action_name or decision.kind,
+            "decision_id": decision.action_params.get("decision_id", ""),
+            "pending_effect": payload.get("pending_effect"),
+            "action_result": action_result.to_dict(),
+            "executed_actions": getattr(self.run_recorder, "total_executed_actions", self.action_backend.action_count),
+            "max_actions": getattr(self.action_backend, "max_actions", None),
+            "stop_reason": "" if self.run_recorder is None else self.run_recorder.stop_reason,
+        }
+        print("CATS_GUI_EVENT " + json.dumps(event, ensure_ascii=False))
 
     def _notify_decision_selected(self, decision: StrategyDecision) -> None:
         if hasattr(self.strategy, "on_decision_selected"):
@@ -1058,6 +1081,16 @@ class StrategyRunner:
         current_step = str(payload.get("current_step", payload.get("step", getattr(self.strategy, "state", ""))))
         current_state = str(payload.get("state", "UNKNOWN_PAGE"))
         action = str(payload.get("action", decision.action_name or decision.kind))
+        reason = str(payload.get("action_reason", decision.reason))
+        if reason in {
+            "pending_effect_waiting_for_confirmation",
+            "pending_effect_duplicate_blocked",
+            "wait_for_ad_close_marker",
+            "wait_after_ad_close",
+            "post_ad_network_flashback",
+            "wait_for_home_after_reward",
+        }:
+            return
         action_result = self._last_action_result
         if action_result is None:
             return

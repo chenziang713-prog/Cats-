@@ -55,8 +55,8 @@ FILM_MARKER_MIN_CONFIDENCE = {
     "confirm_button": 0.85,
 }
 
-FILM_ENTRY_MAX_CLICKS = 3
-WATCH_AD_MAX_CLICKS = 3
+FILM_ENTRY_MAX_CLICKS = 2
+WATCH_AD_MAX_CLICKS = 2
 FILM_CLOSE_AD_MAX_TOTAL_CLICKS = 4
 
 FILM_BUSINESS_TAP_MARKERS = (
@@ -328,6 +328,8 @@ def decide_film_flow_action(
             )
         if _is_home_state(current_state):
             return _decision(current_step, current_state, no_action("already_home_after_ad_close"), "RETURN_HOME")
+        if current_state == "FILM_WATCH_PAGE":
+            return _wait(current_step, current_state, "post_ad_network_flashback")
         if _is_wait_state(current_state):
             return _wait(current_step, current_state, "wait_after_ad_close")
 

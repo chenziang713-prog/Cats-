@@ -13,6 +13,7 @@ from external_strategies.scrap_then_ad_reward_v2.close_markers import safe_close
 from external_strategies.scrap_then_ad_reward_v2.film_flow import (
     FILM_CLOSE_AD_MAX_TOTAL_CLICKS,
     FILM_ENTRY_MARKER,
+    FilmDecision,
     V2_TAP_MARKER_ALLOW_LIST,
     WATCH_AD_MARKER,
     decide_film_flow_action,
@@ -34,6 +35,7 @@ from external_strategies.scrap_then_ad_reward_v2.template_sources import (
 DEFAULT_TARGET_THRESHOLD = 0.80
 STRONG_STATE_CONFIDENCE = 0.90
 STABLE_STATE_FRAMES = 2
+DEFAULT_EFFECT_CONFIRMATION_SECONDS = 2.5
 STEP_RANK = {
     "START": 0,
     "GO_HOME": 1,
@@ -53,6 +55,14 @@ RECOVERY_STAGE_LOCKS = {
     "RETURN_HOME": "v2_preserve_return_home",
 }
 OVERLAY_STATES = {"ERROR_POPUP_PAGE", "POPUP_PAGE"}
+NORMAL_WAIT_REASONS = {
+    "pending_effect_waiting_for_confirmation",
+    "pending_effect_duplicate_blocked",
+    "wait_for_ad_close_marker",
+    "wait_after_ad_close",
+    "wait_for_home_after_reward",
+    "post_ad_network_flashback",
+}
 
 
 class StateAcceptance(NamedTuple):
@@ -64,6 +74,21 @@ class StateAcceptance(NamedTuple):
     policy: str
     reason: str
     overlay_state: str | None = None
+
+
+class PendingEffect(NamedTuple):
+    decision_id: str
+    action_name: str
+    target_marker: str | None
+    source_state: str
+    source_fingerprint: str
+    source_center: tuple[int, int] | None
+    expected_step: str
+    executed_at_monotonic: float
+    confirmation_deadline: float
+    retry_count: int
+    max_retries: int
+    reason: str
 
 
 class FilmFlowRuntimeContext:
@@ -84,6 +109,9 @@ class FilmFlowRuntimeContext:
         self.pending_action_name: str | None = None
         self.pending_target_marker: str | None = None
         self.pending_decision_selected = False
+        self.pending_effect: PendingEffect | None = None
+        self.pending_effect_status = ""
+        self.blocked_duplicate_actions = 0
         self.selected_reward: str | None = None
         self.last_state: str | None = None
         self.last_action: str | None = None
@@ -146,7 +174,13 @@ class Strategy:
         accepted_state = acceptance.accepted_state
         before_step = self.flow_context.current_step
 
-        film_decision = decide_film_flow_action(
+        effect_decision = self._decision_for_pending_effect(
+            observed_state=observed_state,
+            accepted_state=accepted_state,
+            detections=context.detections,
+            fingerprint=fingerprint,
+        )
+        film_decision = effect_decision or decide_film_flow_action(
             step=before_step,
             state=accepted_state,
             detections=context.detections,
@@ -156,7 +190,7 @@ class Strategy:
             reward_click_attempts=self.flow_context.reward_click_attempts,
         )
         film_decision = self._guard_repeated_close_on_same_image(film_decision, context, fingerprint)
-        action = self._with_decision_id(film_decision.action, context.loop_index)
+        action = self._with_decision_id(film_decision.action, context.loop_index, fingerprint)
         action_name = str(action.get("name", ""))
         target_marker = _action_marker(action)
         target_confidence = film_decision.selected_confidence
@@ -196,6 +230,9 @@ class Strategy:
             "watch_ad_click_attempts": self.flow_context.watch_ad_click_attempts,
             "reward_click_attempts": self.flow_context.reward_click_attempts,
             "pending_transition": self.flow_context.pending_transition,
+            "pending_effect": self._pending_effect_name(),
+            "pending_effect_status": self.flow_context.pending_effect_status,
+            "blocked_duplicate_actions": self.flow_context.blocked_duplicate_actions,
             "planned_status": "planned",
         }
 
@@ -291,6 +328,9 @@ class Strategy:
         self._pending_log["watch_ad_click_attempts"] = self.flow_context.watch_ad_click_attempts
         self._pending_log["reward_click_attempts"] = self.flow_context.reward_click_attempts
         self._pending_log["pending_transition"] = self.flow_context.pending_transition
+        self._pending_log["pending_effect"] = self._pending_effect_name()
+        self._pending_log["pending_effect_status"] = self.flow_context.pending_effect_status
+        self._pending_log["blocked_duplicate_actions"] = self.flow_context.blocked_duplicate_actions
         self._pending_log["planned_status"] = status
         self.last_monitor_payload = dict(self._pending_log)
         self._events.append({"event": "scrap_then_ad_reward_v2_loop", **self._pending_log})
@@ -341,6 +381,8 @@ class Strategy:
             "accepted_state": self.flow_context.accepted_state,
             "overlay_state": self.flow_context.overlay_state,
             "pending_transition": self.flow_context.pending_transition,
+            "pending_effect": self._pending_effect_name(),
+            "pending_effect_status": self.flow_context.pending_effect_status,
             "close_ad_attempts": self.flow_context.close_attempt_count,
             "entry_click_attempts": self.flow_context.entry_click_attempts,
             "watch_ad_click_attempts": self.flow_context.watch_ad_click_attempts,
@@ -404,11 +446,78 @@ class Strategy:
             )
         return film_decision
 
-    def _with_decision_id(self, action: Mapping[str, Any], loop_index: int) -> dict[str, Any]:
+    def _decision_for_pending_effect(
+        self,
+        *,
+        observed_state: str,
+        accepted_state: str,
+        detections: Mapping[str, DetectionResult],
+        fingerprint: str,
+    ) -> Any | None:
+        effect = self.flow_context.pending_effect
+        if effect is None:
+            self.flow_context.pending_effect_status = ""
+            return None
+        if self._pending_effect_confirmed(effect, observed_state, accepted_state, detections, fingerprint):
+            self._events.append(
+                {
+                    "event": "scrap_then_ad_reward_v2_pending_effect_confirmed",
+                    "decision_id": effect.decision_id,
+                    "action_name": effect.action_name,
+                    "target_marker": effect.target_marker,
+                    "observed_state": observed_state,
+                    "accepted_state": accepted_state,
+                }
+            )
+            self.flow_context.pending_effect = None
+            self.flow_context.pending_effect_status = "confirmed"
+            return None
+        now = time.monotonic()
+        if now < effect.confirmation_deadline or effect.retry_count >= effect.max_retries:
+            self.flow_context.blocked_duplicate_actions += 1
+            self.flow_context.pending_effect_status = "waiting_for_confirmation"
+            return _effect_wait_decision(effect, accepted_state)
+        self.flow_context.pending_effect_status = "retry_allowed"
+        return None
+
+    def _pending_effect_confirmed(
+        self,
+        effect: PendingEffect,
+        observed_state: str,
+        accepted_state: str,
+        detections: Mapping[str, DetectionResult],
+        fingerprint: str,
+    ) -> bool:
+        if self.flow_context.current_step == "FINISH":
+            return True
+        if effect.action_name == "tap_marker" and effect.target_marker == FILM_ENTRY_MARKER:
+            return accepted_state == "FILM_WATCH_PAGE" or effect.target_marker not in detections
+        if effect.action_name == "tap_marker" and effect.target_marker == WATCH_AD_MARKER:
+            return accepted_state in {
+                "UNKNOWN",
+                "UNKNOWN_PAGE",
+                "LOADING_PAGE",
+                "AD_CLOSE_PAGE",
+                "RIGHT_AD_REWARD_SUCCESS_PAGE",
+            } or effect.target_marker not in detections
+        if effect.action_name == "tap_marker" and effect.target_marker in set(safe_close_marker_names()):
+            return accepted_state in {"RIGHT_AD_REWARD_SUCCESS_PAGE", "HOME", "HOME_PAGE"} or (
+                accepted_state in {"UNKNOWN", "UNKNOWN_PAGE", "LOADING_PAGE", "FILM_WATCH_PAGE"}
+                and fingerprint
+                and fingerprint != effect.source_fingerprint
+            )
+        if effect.action_name == "press_back":
+            return accepted_state in {"HOME", "HOME_PAGE"} or (
+                fingerprint and fingerprint != effect.source_fingerprint and accepted_state != "RIGHT_AD_REWARD_SUCCESS_PAGE"
+            )
+        return fingerprint != "" and fingerprint != effect.source_fingerprint
+
+    def _with_decision_id(self, action: Mapping[str, Any], loop_index: int, fingerprint: str) -> dict[str, Any]:
         self._decision_sequence += 1
         decision_id = f"v2-{loop_index}-{self._decision_sequence}"
         params = dict(action.get("params", {})) if isinstance(action.get("params", {}), Mapping) else {}
         params["decision_id"] = decision_id
+        params["source_fingerprint"] = fingerprint
         self.flow_context.pending_decision_id = decision_id
         self.flow_context.pending_action_name = str(action.get("name", ""))
         self.flow_context.pending_target_marker = _action_marker({"params": params})
@@ -442,14 +551,17 @@ class Strategy:
             if marker == FILM_ENTRY_MARKER:
                 if status == "executed":
                     self.flow_context.entry_click_attempts += 1
+                    self._set_pending_effect(action, marker, proposed_next_step, action_result)
                 self.flow_context.pending_transition = "SELECT_REWARD"
             elif marker == WATCH_AD_MARKER:
                 if status == "executed":
                     self.flow_context.watch_ad_click_attempts += 1
+                    self._set_pending_effect(action, marker, proposed_next_step, action_result)
                 self.flow_context.pending_transition = "WATCH_AD"
             elif marker in set(safe_close_marker_names()):
                 if status == "executed":
                     self.flow_context.close_attempt_count += 1
+                    self._set_pending_effect(action, marker, proposed_next_step, action_result)
                 self.flow_context.pending_transition = "CLOSE_AD_DOING"
                 self.flow_context.last_close_marker = marker
                 self.flow_context.last_close_screenshot_path = str(self._pending_log.get("screenshot_path", ""))
@@ -460,6 +572,7 @@ class Strategy:
         elif action == "press_back":
             if status == "executed":
                 self.flow_context.reward_click_attempts += 1
+                self._set_pending_effect(action, marker, proposed_next_step, action_result)
             self.flow_context.pending_transition = proposed_next_step
         elif action == "no_action" and proposed_next_step == "CLAIM_REWARD":
             self.flow_context.close_attempt_count = 0
@@ -469,6 +582,49 @@ class Strategy:
             self.flow_context.last_close_center = None
         if action == "tap_marker" and marker == "select_reward_mode":
             self.flow_context.selected_reward = marker
+
+    def _set_pending_effect(
+        self,
+        action: str,
+        marker: str | None,
+        proposed_next_step: str,
+        action_result: ActionResult,
+    ) -> None:
+        if self._pending_log is None:
+            return
+        old = self.flow_context.pending_effect
+        retry_count = (
+            old.retry_count + 1
+            if old is not None and old.action_name == action and old.target_marker == marker
+            else 0
+        )
+        max_retries = _max_retries_for_effect(action, marker)
+        now = time.monotonic()
+        self.flow_context.pending_effect = PendingEffect(
+            decision_id=str(self._pending_log.get("decision_id", "")),
+            action_name=action,
+            target_marker=marker,
+            source_state=str(self._pending_log.get("accepted_state", "")),
+            source_fingerprint=str(self._pending_log.get("image_fingerprint", "")),
+            source_center=action_result.clicked_pos or _pair_or_none(self._pending_log.get("clicked_pos")),
+            expected_step=proposed_next_step,
+            executed_at_monotonic=now,
+            confirmation_deadline=now + _confirmation_seconds_for_effect(action, marker),
+            retry_count=retry_count,
+            max_retries=max_retries,
+            reason=str(self._pending_log.get("action_reason", "")),
+        )
+        self.flow_context.pending_effect_status = "waiting_for_confirmation"
+
+    def _pending_effect_name(self) -> str | None:
+        effect = self.flow_context.pending_effect
+        if effect is None:
+            return None
+        if effect.action_name == "tap_marker":
+            return f"waiting_for_{effect.target_marker}_effect"
+        if effect.action_name == "press_back":
+            return "waiting_for_home_after_reward_back"
+        return f"waiting_for_{effect.action_name}_effect"
 
     def _finish_pending_log(self, status: str) -> None:
         if self._pending_log is None:
@@ -713,6 +869,45 @@ def _pair_or_none(value: Any) -> tuple[int, int] | None:
         return int(value[0]), int(value[1])
     except (TypeError, ValueError):
         return None
+
+
+def _effect_wait_decision(effect: PendingEffect, state: str) -> FilmDecision:
+    reason = (
+        "pending_effect_duplicate_blocked"
+        if time.monotonic() >= effect.confirmation_deadline and effect.retry_count >= effect.max_retries
+        else "pending_effect_waiting_for_confirmation"
+    )
+    return FilmDecision(
+        step=effect.expected_step,
+        state=state,
+        action={"name": "wait", "params": {"seconds": 1.0}, "reason": reason},
+        next_step=effect.expected_step,
+        reason=reason,
+        selected_marker=effect.target_marker,
+        selected_confidence=None,
+    )
+
+
+def _confirmation_seconds_for_effect(action: str, marker: str | None) -> float:
+    if action == "tap_marker" and marker == FILM_ENTRY_MARKER:
+        return 2.5
+    if action == "tap_marker" and marker == WATCH_AD_MARKER:
+        return 3.0
+    if action == "tap_marker" and marker in set(safe_close_marker_names()):
+        return 2.0
+    if action == "press_back":
+        return 3.0
+    return DEFAULT_EFFECT_CONFIRMATION_SECONDS
+
+
+def _max_retries_for_effect(action: str, marker: str | None) -> int:
+    if action == "tap_marker" and marker in {FILM_ENTRY_MARKER, WATCH_AD_MARKER}:
+        return 1
+    if action == "tap_marker" and marker in set(safe_close_marker_names()):
+        return 1
+    if action == "press_back":
+        return 0
+    return 0
 
 
 def debug_detect_screen_state(context: Any = None, detections: Any = None) -> dict[str, Any]:

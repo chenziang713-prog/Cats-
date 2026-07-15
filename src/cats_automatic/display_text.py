@@ -72,7 +72,7 @@ ACTION_TYPE_LABELS = {"dry_run_click": "模拟点击", "adb_tap": "真实点击"
 
 DECISION_LABELS.update({
     "no_action": "无需操作",
-    "tap_marker": "模拟点击目标",
+    "tap_marker": "点击目标",
     "press_back": "返回",
     "cycle_completed": "流程完成",
 })
@@ -135,6 +135,9 @@ REASON_LABELS.update({
     "already_home_after_ad_close": "关闭广告后已在主页",
     "wait_after_ad_close": "等待关闭广告后的页面变化",
     "wait_for_home_after_reward": "等待回到主页",
+    "pending_effect_waiting_for_confirmation": "已发送动作，等待页面确认",
+    "pending_effect_duplicate_blocked": "已拦截重复动作",
+    "post_ad_network_flashback": "广告结束后页面网络回闪，保持关闭广告阶段并等待奖励页",
     "film_reward_flow_finished_home": "主页确认，流程完成",
     "flow_finished": "流程完成",
     "recovery_level_1_wait": "恢复等待",
