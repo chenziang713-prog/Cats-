@@ -70,6 +70,78 @@ for index in (1, 2, 3):
 
 ACTION_TYPE_LABELS = {"dry_run_click": "模拟点击", "adb_tap": "真实点击", "wait": "等待", "stop": "停止", "state_transition": "状态转换"}
 
+DECISION_LABELS.update({
+    "no_action": "无需操作",
+    "tap_marker": "模拟点击目标",
+    "press_back": "返回",
+    "cycle_completed": "流程完成",
+})
+
+TARGET_LABELS.update({
+    "main-definate": "主页标记",
+    "watch_ad_film": "胶卷看广告按钮",
+    "watch_buttons": "看广告按钮",
+    "close_buttons": "广告关闭按钮",
+    "get_reward": "领取奖励按钮",
+    "right_ad_reward_success_buttons": "奖励成功按钮",
+    "right_ad_reward_success_marker": "奖励成功页面",
+    "error_buttons": "错误弹窗按钮",
+    "retry_buttons": "重试按钮",
+    "reconnect_buttons": "重新连接按钮",
+    "home_right_ad_buttons": "主页右侧广告按钮",
+    "home_right_ad_marker": "主页右侧广告页面",
+    "pre_watch_optional": "观看前可选按钮",
+})
+
+PHASE_LABELS.update({
+    "START": "开始",
+    "GO_HOME": "确认主页",
+    "ENTER_FILM": "进入胶卷活动",
+    "SELECT_REWARD": "选择奖励",
+    "START_AD": "开始广告",
+    "WATCH_AD": "等待广告播放",
+    "CLOSE_AD_DOING": "关闭广告中",
+    "CLAIM_REWARD": "领取奖励",
+    "RETURN_HOME": "返回主页",
+    "FINISH": "流程完成",
+    "HOME": "主页",
+    "HOME_PAGE": "主页",
+    "FILM_WATCH_PAGE": "胶卷广告页面",
+    "AD_CLOSE_PAGE": "广告关闭页面",
+    "RIGHT_AD_REWARD_SUCCESS_PAGE": "奖励成功页面",
+    "UNKNOWN": "未知页面",
+    "UNKNOWN_PAGE": "未知页面",
+    "LOADING_PAGE": "加载中",
+    "ERROR_POPUP_PAGE": "错误弹窗",
+})
+
+REASON_LABELS.update({
+    "film_flow_start": "初始化胶卷流程",
+    "home_ready_for_film_entry": "主页已确认，准备进入胶卷",
+    "film_entry_marker_selected": "选择胶卷入口",
+    "film_entry_marker_not_found": "未找到胶卷入口，继续等待",
+    "film_watch_page_confirmed": "已进入胶卷广告页面",
+    "optional_reward_marker_not_found": "未找到可选奖励，继续看广告",
+    "watch_ad_film_marker_selected": "选择看广告按钮",
+    "watch_ad_film_marker_not_found": "未找到看广告按钮，继续等待",
+    "wait_for_ad_close_marker": "等待广告播放或关闭按钮出现",
+    "close_ad_marker_selected": "选择安全关闭按钮",
+    "no_safe_close_ad_marker": "未找到安全关闭按钮",
+    "close_ad_attempt_limit": "关闭广告尝试达到上限",
+    "reward_page_confirmed_after_ad_close": "关闭广告后已确认奖励页",
+    "reward_success_press_back": "奖励页受控返回",
+    "reward_success_press_back_retry": "奖励页再次受控返回",
+    "reward_already_returned_home": "奖励后已回到主页",
+    "already_home_after_ad_close": "关闭广告后已在主页",
+    "wait_after_ad_close": "等待关闭广告后的页面变化",
+    "wait_for_home_after_reward": "等待回到主页",
+    "film_reward_flow_finished_home": "主页确认，流程完成",
+    "flow_finished": "流程完成",
+    "recovery_level_1_wait": "恢复等待",
+    "recovery_level_2_press_back": "恢复返回",
+})
+
+
 def to_display_decision(value: str) -> str:
     return DECISION_LABELS.get(value, f"未翻译决策：{value}" if value else "等待下一次识别结果")
 

@@ -113,6 +113,8 @@ class StrategyRunner:
                 stop_reason = "license_heartbeat_failed"
                 break
             if not self.repeat_after_reward and loop_index > self.max_loops:
+                if str(getattr(self.strategy, "state", "")) != "FINISH":
+                    stop_reason = "max_loops_reached"
                 break
             print(f"[循环 {loop_index}]")
             print(f"轮次：{self._current_cycle_index}")
@@ -259,6 +261,7 @@ class StrategyRunner:
                         print(
                             f"[循环 {loop_index}] 异常恢复：当前动作后端不支持 BACK，继续原策略"
                         )
+            self._notify_decision_selected(decision)
             if self.run_recorder is not None and hasattr(self.strategy, "phase_snapshot"):
                 self.run_recorder.record_phase_snapshot(
                     self.strategy.phase_snapshot(
@@ -594,6 +597,8 @@ class StrategyRunner:
     ) -> str | None:
         self._record_cycle_completed(reason=reason, last_seen_ad_entry=last_seen_ad_entry)
         if not self.repeat_after_reward:
+            if reason == "flow_finished":
+                return reason
             if reason == "scrap_then_ad_reward_completed":
                 return reason
             return (
@@ -654,6 +659,10 @@ class StrategyRunner:
             self._record_error_popup_events(loop_index)
             return
         self._notify_strategy_action_result(decision, action_result)
+
+    def _notify_decision_selected(self, decision: StrategyDecision) -> None:
+        if hasattr(self.strategy, "on_decision_selected"):
+            self.strategy.on_decision_selected(decision)
 
     def _can_enter_error_popup_recovery(self) -> bool:
         if self.stop_file is not None and self.stop_file.exists():
@@ -997,6 +1006,23 @@ class StrategyRunner:
         )
         if plan is None or plan.decision is None:
             return None
+        recovery_lock = (
+            self.strategy.recovery_stage_lock()
+            if hasattr(self.strategy, "recovery_stage_lock")
+            else None
+        )
+        if recovery_lock is not None:
+            if self.run_recorder is not None:
+                self.run_recorder.event(
+                    recovery_lock,
+                    loop=loop_index,
+                    cycle_index=self._current_cycle_index,
+                    stuck_reason=plan.stuck_reason,
+                    recovery_level=plan.recovery_level,
+                    recovery_action=plan.recovery_action,
+                    screenshot_path=str(screenshot_path),
+                )
+            return None
         workflow_targets = _workflow_target_names(detections)
         if workflow_targets:
             if self.run_recorder is not None:
@@ -1050,8 +1076,24 @@ class StrategyRunner:
         )
         if plan is None:
             return
+        recovery_lock = (
+            self.strategy.recovery_stage_lock()
+            if hasattr(self.strategy, "recovery_stage_lock")
+            else None
+        )
         if plan.recovery_level == 3 and hasattr(self.strategy, "reset_for_recovery"):
-            self.strategy.reset_for_recovery("GO_HOME")
+            if recovery_lock is None:
+                self.strategy.reset_for_recovery("GO_HOME")
+            elif self.run_recorder is not None:
+                self.run_recorder.event(
+                    recovery_lock,
+                    loop=loop_index,
+                    cycle_index=self._current_cycle_index,
+                    stuck_reason=plan.stuck_reason,
+                    recovery_level=plan.recovery_level,
+                    recovery_action=plan.recovery_action,
+                    screenshot_path=str(self._current_screen_path or ""),
+                )
         if self.run_recorder is not None:
             self.run_recorder.event(
                 "stuck_detected",

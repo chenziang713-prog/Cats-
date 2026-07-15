@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import time
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, NamedTuple
 
 from cats_automatic.actions import ActionResult
 from cats_automatic.strategy_base import DetectionResult, StrategyContext, StrategyDecision, TargetSpec
@@ -30,25 +32,73 @@ from external_strategies.scrap_then_ad_reward_v2.template_sources import (
 
 
 DEFAULT_TARGET_THRESHOLD = 0.80
+STRONG_STATE_CONFIDENCE = 0.90
+STABLE_STATE_FRAMES = 2
+STEP_RANK = {
+    "START": 0,
+    "GO_HOME": 1,
+    "ENTER_FILM": 2,
+    "SELECT_REWARD": 3,
+    "START_AD": 4,
+    "WATCH_AD": 5,
+    "CLOSE_AD_DOING": 6,
+    "CLAIM_REWARD": 7,
+    "RETURN_HOME": 8,
+    "FINISH": 9,
+}
+RECOVERY_STAGE_LOCKS = {
+    "WATCH_AD": "v2_preserve_watch_ad",
+    "CLOSE_AD_DOING": "v2_preserve_close_ad",
+    "CLAIM_REWARD": "v2_preserve_claim_reward",
+    "RETURN_HOME": "v2_preserve_return_home",
+}
+OVERLAY_STATES = {"ERROR_POPUP_PAGE", "POPUP_PAGE"}
+
+
+class StateAcceptance(NamedTuple):
+    accepted: bool
+    observed_state: str
+    accepted_state: str
+    keep_step: bool
+    next_step: str | None
+    policy: str
+    reason: str
+    overlay_state: str | None = None
 
 
 class FilmFlowRuntimeContext:
     def __init__(self) -> None:
+        now = time.monotonic()
         self.current_step = "START"
-        self.close_attempt_count = 0
+        self.observed_state: str | None = None
+        self.accepted_state: str | None = None
+        self.last_stable_state: str | None = None
+        self.overlay_state: str | None = None
+        self.pending_transition: str | None = None
+        self.mismatch_state: str | None = None
+        self.mismatch_count = 0
+        self.stable_state_count = 0
+        self.last_progress_monotonic = now
+        self.step_entered_monotonic = now
+        self.pending_decision_id: str | None = None
+        self.pending_action_name: str | None = None
+        self.pending_target_marker: str | None = None
+        self.pending_decision_selected = False
         self.selected_reward: str | None = None
         self.last_state: str | None = None
         self.last_action: str | None = None
-        self.pending_transition: str | None = None
         self.entry_click_attempts = 0
         self.watch_ad_click_attempts = 0
         self.reward_click_attempts = 0
+        self.close_attempt_count = 0
         self.last_close_marker: str | None = None
         self.last_close_screenshot_path = ""
+        self.last_close_fingerprint = ""
+        self.last_close_center: tuple[int, int] | None = None
 
 
 class Strategy:
-    """Thin runtime adapter for the canonical v2 detector and film flow."""
+    """Runtime adapter that keeps v2 detection and film flow state synchronized."""
 
     handles_reward_cycle_completion = True
     tap_marker_allow_list = frozenset(V2_TAP_MARKER_ALLOW_LIST)
@@ -60,6 +110,7 @@ class Strategy:
         self._pending_log: dict[str, Any] | None = None
         self._events: list[dict[str, Any]] = []
         self._targets: tuple[TargetSpec, ...] | None = None
+        self._decision_sequence = 0
 
     @property
     def close_ad_attempts(self) -> int:
@@ -78,21 +129,34 @@ class Strategy:
             context.detections,
             screenshot_path=str(context.screen_path),
         )
-        _, normalized_state = normalize_state_name(screen_state_result.state_name)
-        _apply_pending_transition(self.flow_context, normalized_state)
+        _, observed_state = normalize_state_name(screen_state_result.state_name)
+        fingerprint = image_fingerprint(context.screen_path)
+        _apply_pending_transition(self.flow_context, observed_state)
 
         before_step = self.flow_context.current_step
+        acceptance = accept_observed_state(
+            current_step=before_step,
+            observed_state=observed_state,
+            previous_accepted_state=self.flow_context.accepted_state,
+            consecutive_count=self.flow_context.stable_state_count,
+            detections=context.detections,
+            confidence=screen_state_result.confidence,
+        )
+        self._record_acceptance(acceptance)
+        accepted_state = acceptance.accepted_state
+        before_step = self.flow_context.current_step
+
         film_decision = decide_film_flow_action(
             step=before_step,
-            state=normalized_state,
+            state=accepted_state,
             detections=context.detections,
             entry_click_attempts=self.flow_context.entry_click_attempts,
             watch_ad_click_attempts=self.flow_context.watch_ad_click_attempts,
             close_ad_attempts=self.flow_context.close_attempt_count,
             reward_click_attempts=self.flow_context.reward_click_attempts,
         )
-        film_decision = self._guard_repeated_close_on_same_screenshot(film_decision, context)
-        action = film_decision.action
+        film_decision = self._guard_repeated_close_on_same_image(film_decision, context, fingerprint)
+        action = self._with_decision_id(film_decision.action, context.loop_index)
         action_name = str(action.get("name", ""))
         target_marker = _action_marker(action)
         target_confidence = film_decision.selected_confidence
@@ -100,16 +164,22 @@ class Strategy:
             target_confidence = context.detections[target_marker].confidence
 
         self._pending_log = {
+            "decision_id": self.flow_context.pending_decision_id,
             "loop": context.loop_index,
             "step": before_step,
             "current_step": before_step,
-            "state": normalized_state,
+            "observed_state": observed_state,
+            "accepted_state": accepted_state,
+            "state": accepted_state,
             "raw_state": screen_state_result.state_name,
+            "overlay_state": self.flow_context.overlay_state,
             "confidence": screen_state_result.confidence,
             "matched_markers": list(screen_state_result.matched_markers),
             "best_marker": screen_state_result.best_marker,
             "reason": screen_state_result.reason,
             "selection_reason": screen_state_result.selection_reason,
+            "acceptance_policy": acceptance.policy,
+            "acceptance_reason": acceptance.reason,
             "action": action_name,
             "action_reason": film_decision.reason,
             "target_marker": target_marker,
@@ -119,20 +189,74 @@ class Strategy:
             "next_step": film_decision.next_step,
             "step_changed": film_decision.next_step != before_step,
             "screenshot_path": str(context.screen_path),
+            "image_fingerprint": fingerprint,
             "dry_run": True,
             "close_ad_attempts": self.flow_context.close_attempt_count,
+            "entry_click_attempts": self.flow_context.entry_click_attempts,
+            "watch_ad_click_attempts": self.flow_context.watch_ad_click_attempts,
+            "reward_click_attempts": self.flow_context.reward_click_attempts,
             "pending_transition": self.flow_context.pending_transition,
             "planned_status": "planned",
         }
 
         if film_decision.next_step == "FINISH":
             self._finish_pending_log("complete")
-            return StrategyDecision.complete(film_decision.reason or "film_reward_flow_finished")
+            return StrategyDecision.complete("flow_finished")
         return action_to_decision(action)
+
+    def on_decision_selected(self, final_decision: StrategyDecision) -> None:
+        if self._pending_log is None:
+            return
+        if _decision_matches_pending(final_decision, self._pending_log):
+            self.flow_context.pending_decision_selected = True
+            return
+        self._pending_log["planned_status"] = "overridden"
+        self._pending_log["override_decision"] = final_decision.action_name or final_decision.kind
+        self._events.append({"event": "scrap_then_ad_reward_v2_decision_overridden", **self._pending_log})
+        self._clear_pending_decision()
+        self._pending_log = None
 
     def on_action_result(self, decision: StrategyDecision, action_result: ActionResult) -> None:
         if self._pending_log is None:
             return
+        if not self.flow_context.pending_decision_selected:
+            if _decision_matches_pending(decision, self._pending_log):
+                self.flow_context.pending_decision_selected = True
+            else:
+                self._events.append(
+                    {
+                        "event": "scrap_then_ad_reward_v2_action_result_ignored",
+                        "reason": "decision_not_selected",
+                        "decision": decision.action_name or decision.kind,
+                        "action_result": action_result.to_dict(),
+                        **self._pending_log,
+                    }
+                )
+                return
+        if not self.flow_context.pending_decision_selected:
+            self._events.append(
+                {
+                    "event": "scrap_then_ad_reward_v2_action_result_ignored",
+                    "reason": "decision_not_selected",
+                    "decision": decision.action_name or decision.kind,
+                    "action_result": action_result.to_dict(),
+                    **self._pending_log,
+                }
+            )
+            return
+        decision_id = _decision_id_from_decision(decision)
+        if decision_id and decision_id != self.flow_context.pending_decision_id:
+            self._events.append(
+                {
+                    "event": "scrap_then_ad_reward_v2_action_result_ignored",
+                    "reason": "decision_id_mismatch",
+                    "received_decision_id": decision_id,
+                    "action_result": action_result.to_dict(),
+                    **self._pending_log,
+                }
+            )
+            return
+
         old_step = str(self._pending_log["step"])
         proposed_next_step = str(self._pending_log["next_step"])
         action = str(self._pending_log["action"])
@@ -140,26 +264,37 @@ class Strategy:
         status = _action_status(action_result)
 
         if action_result.success:
-            self.flow_context.current_step = _next_step_after_action(
-                current_step=old_step,
+            self.flow_context.current_step = self._resolve_step_after_action(
+                old_step=old_step,
                 proposed_next_step=proposed_next_step,
                 action=action,
+                status=status,
             )
-            self._update_transition_after_success(action, None if marker is None else str(marker), proposed_next_step)
+            self._update_transition_after_success(
+                action,
+                None if marker is None else str(marker),
+                proposed_next_step,
+                status=status,
+                action_result=action_result,
+            )
         else:
             self.flow_context.current_step = old_step
 
-        self.flow_context.last_state = str(self._pending_log["state"])
+        self.flow_context.last_state = str(self._pending_log["accepted_state"])
         self.flow_context.last_action = action
         self.state = self.flow_context.current_step
         self._pending_log["action_result"] = action_result.to_dict()
         self._pending_log["next_step"] = self.flow_context.current_step
         self._pending_log["step_changed"] = self.flow_context.current_step != old_step
         self._pending_log["close_ad_attempts"] = self.flow_context.close_attempt_count
+        self._pending_log["entry_click_attempts"] = self.flow_context.entry_click_attempts
+        self._pending_log["watch_ad_click_attempts"] = self.flow_context.watch_ad_click_attempts
+        self._pending_log["reward_click_attempts"] = self.flow_context.reward_click_attempts
         self._pending_log["pending_transition"] = self.flow_context.pending_transition
         self._pending_log["planned_status"] = status
         self.last_monitor_payload = dict(self._pending_log)
         self._events.append({"event": "scrap_then_ad_reward_v2_loop", **self._pending_log})
+        self._clear_pending_decision()
         self._pending_log = None
 
     def reset_cycle(self) -> None:
@@ -169,11 +304,23 @@ class Strategy:
         self._pending_log = None
 
     def reset_for_recovery(self, step: str = "GO_HOME") -> None:
+        if self.recovery_stage_lock() is not None:
+            self._events.append(
+                {
+                    "event": "scrap_then_ad_reward_v2_recovery_reset_blocked",
+                    "current_step": self.flow_context.current_step,
+                    "requested_step": step,
+                    "reason": self.recovery_stage_lock(),
+                }
+            )
+            return
         self.flow_context.current_step = step
         self.flow_context.pending_transition = None
         self.flow_context.close_attempt_count = 0
         self.flow_context.last_close_marker = None
         self.flow_context.last_close_screenshot_path = ""
+        self.flow_context.last_close_fingerprint = ""
+        self.flow_context.last_close_center = None
         self.state = self.flow_context.current_step
 
     def current_phase(self) -> str:
@@ -190,8 +337,13 @@ class Strategy:
             "loop": loop_index,
             "step": self.flow_context.current_step,
             "current_step": self.flow_context.current_step,
+            "observed_state": self.flow_context.observed_state,
+            "accepted_state": self.flow_context.accepted_state,
+            "overlay_state": self.flow_context.overlay_state,
             "pending_transition": self.flow_context.pending_transition,
             "close_ad_attempts": self.flow_context.close_attempt_count,
+            "entry_click_attempts": self.flow_context.entry_click_attempts,
+            "watch_ad_click_attempts": self.flow_context.watch_ad_click_attempts,
             "chosen_decision": decision.action_name or decision.kind,
             "detected_targets": sorted(detections),
         }
@@ -201,20 +353,48 @@ class Strategy:
         self._events = []
         return events
 
-    def recovery_stage_lock(self) -> None:
-        return None
+    def recovery_stage_lock(self) -> str | None:
+        return RECOVERY_STAGE_LOCKS.get(self.flow_context.current_step)
 
-    def _guard_repeated_close_on_same_screenshot(self, film_decision: Any, context: StrategyContext) -> Any:
+    def _record_acceptance(self, acceptance: StateAcceptance) -> None:
+        context = self.flow_context
+        context.observed_state = acceptance.observed_state
+        context.overlay_state = acceptance.overlay_state
+        if acceptance.accepted_state == context.accepted_state:
+            context.stable_state_count += 1
+        else:
+            context.stable_state_count = 1
+        context.accepted_state = acceptance.accepted_state
+        if acceptance.accepted:
+            context.last_stable_state = acceptance.accepted_state
+            context.mismatch_state = None
+            context.mismatch_count = 0
+        else:
+            if context.mismatch_state == acceptance.observed_state:
+                context.mismatch_count += 1
+            else:
+                context.mismatch_state = acceptance.observed_state
+                context.mismatch_count = 1
+
+    def _guard_repeated_close_on_same_image(
+        self,
+        film_decision: Any,
+        context: StrategyContext,
+        fingerprint: str,
+    ) -> Any:
         action = film_decision.action
         if str(action.get("name", "")) != "tap_marker":
             return film_decision
         marker = _action_marker(action)
         if marker not in set(safe_close_marker_names()):
             return film_decision
-        screenshot_path = str(context.screen_path)
+        detection = context.detections.get(marker or "")
+        center = None if detection is None else detection.center
         if (
             marker == self.flow_context.last_close_marker
-            and screenshot_path == self.flow_context.last_close_screenshot_path
+            and fingerprint
+            and fingerprint == self.flow_context.last_close_fingerprint
+            and center == self.flow_context.last_close_center
         ):
             return decide_film_flow_action(
                 step=film_decision.step,
@@ -224,25 +404,69 @@ class Strategy:
             )
         return film_decision
 
-    def _update_transition_after_success(self, action: str, marker: str | None, proposed_next_step: str) -> None:
+    def _with_decision_id(self, action: Mapping[str, Any], loop_index: int) -> dict[str, Any]:
+        self._decision_sequence += 1
+        decision_id = f"v2-{loop_index}-{self._decision_sequence}"
+        params = dict(action.get("params", {})) if isinstance(action.get("params", {}), Mapping) else {}
+        params["decision_id"] = decision_id
+        self.flow_context.pending_decision_id = decision_id
+        self.flow_context.pending_action_name = str(action.get("name", ""))
+        self.flow_context.pending_target_marker = _action_marker({"params": params})
+        self.flow_context.pending_decision_selected = False
+        return {"name": str(action.get("name", "")), "params": params, "reason": str(action.get("reason", ""))}
+
+    def _resolve_step_after_action(
+        self,
+        *,
+        old_step: str,
+        proposed_next_step: str,
+        action: str,
+        status: str,
+    ) -> str:
+        if action == "wait":
+            return old_step
+        if action in {"tap_marker", "press_back"} and status == "dry_run":
+            return old_step
+        return _forward_step(old_step, proposed_next_step)
+
+    def _update_transition_after_success(
+        self,
+        action: str,
+        marker: str | None,
+        proposed_next_step: str,
+        *,
+        status: str,
+        action_result: ActionResult,
+    ) -> None:
         if action == "tap_marker":
             if marker == FILM_ENTRY_MARKER:
-                self.flow_context.entry_click_attempts += 1
+                if status == "executed":
+                    self.flow_context.entry_click_attempts += 1
                 self.flow_context.pending_transition = "SELECT_REWARD"
             elif marker == WATCH_AD_MARKER:
-                self.flow_context.watch_ad_click_attempts += 1
+                if status == "executed":
+                    self.flow_context.watch_ad_click_attempts += 1
                 self.flow_context.pending_transition = "WATCH_AD"
             elif marker in set(safe_close_marker_names()):
-                self.flow_context.close_attempt_count += 1
+                if status == "executed":
+                    self.flow_context.close_attempt_count += 1
                 self.flow_context.pending_transition = "CLOSE_AD_DOING"
                 self.flow_context.last_close_marker = marker
                 self.flow_context.last_close_screenshot_path = str(self._pending_log.get("screenshot_path", ""))
+                self.flow_context.last_close_fingerprint = str(self._pending_log.get("image_fingerprint", ""))
+                self.flow_context.last_close_center = action_result.clicked_pos or _pair_or_none(
+                    self._pending_log.get("clicked_pos")
+                )
         elif action == "press_back":
+            if status == "executed":
+                self.flow_context.reward_click_attempts += 1
             self.flow_context.pending_transition = proposed_next_step
         elif action == "no_action" and proposed_next_step == "CLAIM_REWARD":
             self.flow_context.close_attempt_count = 0
             self.flow_context.last_close_marker = None
             self.flow_context.last_close_screenshot_path = ""
+            self.flow_context.last_close_fingerprint = ""
+            self.flow_context.last_close_center = None
         if action == "tap_marker" and marker == "select_reward_mode":
             self.flow_context.selected_reward = marker
 
@@ -251,7 +475,7 @@ class Strategy:
             return
         old_step = str(self._pending_log["step"])
         self.flow_context.current_step = "FINISH"
-        self.flow_context.last_state = str(self._pending_log["state"])
+        self.flow_context.last_state = str(self._pending_log["accepted_state"])
         self.flow_context.last_action = str(self._pending_log["action"])
         self.state = self.flow_context.current_step
         self._pending_log["next_step"] = "FINISH"
@@ -259,7 +483,103 @@ class Strategy:
         self._pending_log["planned_status"] = status
         self.last_monitor_payload = dict(self._pending_log)
         self._events.append({"event": "scrap_then_ad_reward_v2_loop", **self._pending_log})
+        self._clear_pending_decision()
         self._pending_log = None
+
+    def _clear_pending_decision(self) -> None:
+        self.flow_context.pending_decision_id = None
+        self.flow_context.pending_action_name = None
+        self.flow_context.pending_target_marker = None
+        self.flow_context.pending_decision_selected = False
+
+
+def accept_observed_state(
+    *,
+    current_step: str,
+    observed_state: str,
+    previous_accepted_state: str | None,
+    consecutive_count: int,
+    detections: Mapping[str, DetectionResult],
+    confidence: float = 0.0,
+) -> StateAcceptance:
+    if observed_state in OVERLAY_STATES:
+        return StateAcceptance(
+            accepted=True,
+            observed_state=observed_state,
+            accepted_state=previous_accepted_state or "UNKNOWN",
+            keep_step=True,
+            next_step=None,
+            policy="overlay",
+            reason="overlay_state_does_not_replace_main_step",
+            overlay_state=observed_state,
+        )
+
+    state = observed_state
+    strong = confidence >= STRONG_STATE_CONFIDENCE
+    repeated = consecutive_count + 1 >= STABLE_STATE_FRAMES
+    if current_step in {"WATCH_AD", "CLOSE_AD_DOING", "CLAIM_REWARD", "RETURN_HOME"} and state in {"HOME", "HOME_PAGE"}:
+        return _accepted(current_step, state, "late_home_fast_path", "home accepted in late flow")
+    if current_step in {"CLOSE_AD_DOING", "WATCH_AD"} and state == "RIGHT_AD_REWARD_SUCCESS_PAGE":
+        return _accepted(current_step, state, "reward_fast_path", "reward page accepted after ad")
+    if current_step == "CLAIM_REWARD" and state == "RIGHT_AD_REWARD_SUCCESS_PAGE":
+        return _accepted(current_step, state, "claim_reward_state", "reward page still active")
+    if state in {"UNKNOWN", "UNKNOWN_PAGE", "LOADING_PAGE"}:
+        return _accepted(current_step, state, "wait_state", "transient or ad playback state")
+
+    allowed = _allowed_states_for_step(current_step)
+    if state in allowed["forward"] or state in allowed["wait"] or state in allowed["transient"]:
+        if strong or repeated or state in {"HOME", "AD_CLOSE_PAGE", "FILM_WATCH_PAGE"}:
+            return _accepted(current_step, state, "step_matrix", "state allowed by current step")
+        return StateAcceptance(
+            accepted=False,
+            observed_state=state,
+            accepted_state=previous_accepted_state or state,
+            keep_step=True,
+            next_step=None,
+            policy="needs_confirmation",
+            reason="waiting for consecutive frame confirmation",
+        )
+
+    if state == "FILM_WATCH_PAGE" and current_step in {"WATCH_AD", "CLOSE_AD_DOING", "CLAIM_REWARD", "RETURN_HOME"}:
+        return _accepted(current_step, state, "network_flashback", "film page flashback kept in current step")
+
+    return StateAcceptance(
+        accepted=False,
+        observed_state=state,
+        accepted_state=previous_accepted_state or state,
+        keep_step=True,
+        next_step=None,
+        policy="illegal_state_held",
+        reason="observed state is not legal for current step",
+    )
+
+
+def _accepted(current_step: str, state: str, policy: str, reason: str) -> StateAcceptance:
+    return StateAcceptance(
+        accepted=True,
+        observed_state=state,
+        accepted_state=state,
+        keep_step=True,
+        next_step=None,
+        policy=policy,
+        reason=reason,
+    )
+
+
+def _allowed_states_for_step(step: str) -> dict[str, set[str]]:
+    matrix = {
+        "START": {"forward": {"UNKNOWN", "UNKNOWN_PAGE", "HOME"}, "wait": set(), "transient": set()},
+        "GO_HOME": {"forward": {"HOME", "HOME_PAGE"}, "wait": {"UNKNOWN", "UNKNOWN_PAGE", "LOADING_PAGE"}, "transient": set()},
+        "ENTER_FILM": {"forward": {"HOME", "HOME_PAGE", "FILM_WATCH_PAGE"}, "wait": {"UNKNOWN", "UNKNOWN_PAGE", "LOADING_PAGE"}, "transient": set()},
+        "SELECT_REWARD": {"forward": {"FILM_WATCH_PAGE"}, "wait": {"UNKNOWN", "UNKNOWN_PAGE", "LOADING_PAGE"}, "transient": set()},
+        "START_AD": {"forward": {"FILM_WATCH_PAGE", "AD_CLOSE_PAGE"}, "wait": {"UNKNOWN", "UNKNOWN_PAGE", "LOADING_PAGE"}, "transient": set()},
+        "WATCH_AD": {"forward": {"AD_CLOSE_PAGE", "RIGHT_AD_REWARD_SUCCESS_PAGE", "HOME", "HOME_PAGE"}, "wait": {"UNKNOWN", "UNKNOWN_PAGE", "LOADING_PAGE"}, "transient": {"FILM_WATCH_PAGE"}},
+        "CLOSE_AD_DOING": {"forward": {"RIGHT_AD_REWARD_SUCCESS_PAGE", "HOME", "HOME_PAGE"}, "wait": {"AD_CLOSE_PAGE", "UNKNOWN", "UNKNOWN_PAGE", "LOADING_PAGE"}, "transient": {"FILM_WATCH_PAGE"}},
+        "CLAIM_REWARD": {"forward": {"RIGHT_AD_REWARD_SUCCESS_PAGE", "HOME", "HOME_PAGE"}, "wait": {"UNKNOWN", "UNKNOWN_PAGE", "LOADING_PAGE"}, "transient": {"FILM_WATCH_PAGE"}},
+        "RETURN_HOME": {"forward": {"HOME", "HOME_PAGE", "RIGHT_AD_REWARD_SUCCESS_PAGE"}, "wait": {"UNKNOWN", "UNKNOWN_PAGE", "LOADING_PAGE"}, "transient": {"FILM_WATCH_PAGE"}},
+        "FINISH": {"forward": {"HOME", "HOME_PAGE"}, "wait": set(), "transient": set()},
+    }
+    return matrix.get(step, {"forward": set(), "wait": {"UNKNOWN", "UNKNOWN_PAGE"}, "transient": set()})
 
 
 def _canonical_v2_targets() -> list[TargetSpec]:
@@ -292,11 +612,11 @@ def _threshold_for_marker(marker_name: str) -> float:
 def _apply_pending_transition(context: FilmFlowRuntimeContext, detected_state: str) -> None:
     if context.pending_transition is None:
         return
-    if context.pending_transition == "WATCH_AD" and detected_state in {"UNKNOWN", "UNKNOWN_PAGE", "AD_CLOSE_PAGE"}:
-        context.current_step = "WATCH_AD"
+    if context.pending_transition == "WATCH_AD" and detected_state in {"UNKNOWN", "UNKNOWN_PAGE", "AD_CLOSE_PAGE", "RIGHT_AD_REWARD_SUCCESS_PAGE"}:
+        _set_step(context, "WATCH_AD")
         context.pending_transition = None
     elif context.pending_transition == "SELECT_REWARD" and detected_state == "FILM_WATCH_PAGE":
-        context.current_step = "SELECT_REWARD"
+        _set_step(context, "SELECT_REWARD")
         context.pending_transition = None
     elif context.pending_transition == "CLOSE_AD_DOING" and detected_state in {
         "AD_CLOSE_PAGE",
@@ -305,18 +625,52 @@ def _apply_pending_transition(context: FilmFlowRuntimeContext, detected_state: s
         "HOME_PAGE",
         "UNKNOWN",
         "UNKNOWN_PAGE",
+        "FILM_WATCH_PAGE",
     }:
-        context.current_step = "CLOSE_AD_DOING"
+        _set_step(context, "CLOSE_AD_DOING")
         context.pending_transition = None
     elif context.pending_transition == "RETURN_HOME" and detected_state in {"HOME", "HOME_PAGE"}:
-        context.current_step = "RETURN_HOME"
+        _set_step(context, "RETURN_HOME")
         context.pending_transition = None
 
 
-def _next_step_after_action(*, current_step: str, proposed_next_step: str, action: str) -> str:
-    if action == "wait":
+def _set_step(context: FilmFlowRuntimeContext, next_step: str) -> None:
+    current = context.current_step
+    context.current_step = _forward_step(current, next_step)
+    if context.current_step != current:
+        context.step_entered_monotonic = time.monotonic()
+        context.last_progress_monotonic = context.step_entered_monotonic
+
+
+def _forward_step(current_step: str, proposed_step: str) -> str:
+    if STEP_RANK.get(proposed_step, -1) < STEP_RANK.get(current_step, -1):
         return current_step
-    return proposed_next_step
+    return proposed_step
+
+
+def image_fingerprint(path: Path) -> str:
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def _decision_matches_pending(decision: StrategyDecision, pending: Mapping[str, Any]) -> bool:
+    expected_action = str(pending.get("action", ""))
+    if expected_action == "press_back":
+        actual_action = decision.action_name or decision.kind
+        return actual_action == "press_back"
+    actual_action = decision.action_name or decision.kind
+    if actual_action != expected_action:
+        return False
+    decision_id = _decision_id_from_decision(decision)
+    pending_id = pending.get("decision_id")
+    return not decision_id or decision_id == pending_id
+
+
+def _decision_id_from_decision(decision: StrategyDecision) -> str | None:
+    raw = decision.action_params.get("decision_id") if decision.action_params else None
+    return None if raw is None else str(raw)
 
 
 def _action_marker(action: Mapping[str, Any]) -> str | None:
@@ -350,6 +704,15 @@ def _marker_matches(pattern: str, marker_name: str) -> bool:
     if pattern.endswith("*"):
         return marker_name.startswith(pattern[:-1])
     return marker_name == pattern
+
+
+def _pair_or_none(value: Any) -> tuple[int, int] | None:
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return None
+    try:
+        return int(value[0]), int(value[1])
+    except (TypeError, ValueError):
+        return None
 
 
 def debug_detect_screen_state(context: Any = None, detections: Any = None) -> dict[str, Any]:
@@ -395,10 +758,14 @@ def run_strategy_v2(context: Any) -> dict[str, Any]:
 
 __all__ = [
     "SCREEN_STATE_TEMPLATES",
+    "STEP_RANK",
+    "StateAcceptance",
     "Strategy",
+    "accept_observed_state",
     "debug_detect_screen_state",
     "decide_next_action",
     "decide_next_action_v2",
     "detect_current_screen_state_from_detections",
+    "image_fingerprint",
     "run_strategy_v2",
 ]
