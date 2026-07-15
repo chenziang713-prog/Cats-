@@ -32,6 +32,10 @@ SYNC_DIRECTORIES = (
         Path("external_strategies/scrap_then_ad_reward/templates"),
         Path("external_strategies/scrap_then_ad_reward/templates"),
     ),
+    (
+        Path("external_strategies/scrap_then_ad_reward_v2/templates"),
+        Path("external_strategies/scrap_then_ad_reward_v2/templates"),
+    ),
 )
 
 

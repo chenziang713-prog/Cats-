@@ -3,11 +3,13 @@ from __future__ import annotations
 import argparse
 import shutil
 import subprocess
+import zipfile
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RELEASE_DIR = REPO_ROOT / "CATSautomatic-release"
+RELEASE_ZIP = REPO_ROOT / "CATSautomatic-release-v1.5.zip"
 DIST_DIR = REPO_ROOT / "dist"
 BUILD_DIR = REPO_ROOT / "build"
 
@@ -153,31 +155,60 @@ POWERED BY 神箭
 7. ad_entry 置信度低于 0.80 不算主页；battle_result_popup 未关闭前不会开始胶卷广告。
 """
 
+README_TEXT += """
+
+十九、胶卷广告 V2（v1.5）
+1. 默认策略为“胶卷广告 V2 / scrap_then_ad_reward_v2”。
+2. 第一次请先运行“胶卷 V2 模拟测试”，确认截图、状态和 click_records 正常。
+3. “胶卷 V2 真实一轮”会启用 --allow-click，但不会默认无限循环。
+4. 正常一轮只需要入口、观看广告、关闭广告和返回键这 4 个真实动作。
+5. 程序会拦截连续重复点击；已发送点击后会等待下一帧确认页面变化。
+6. 红色真实点击模式表示会发送 ADB tap/keyevent。
+7. 点击停止会先创建 output\\STOP，让 CLI 写完 summary 后退出。
+8. 可以在 GUI 打开最新运行目录、summary.txt 和最后动作截图。
+9. 网络回闪时程序会等待，不会重新点击观看广告。
+10. 换电脑运行时，先用“自动查找 ADB”和“刷新设备列表”确认设备。
+"""
+
+
+def copy_external_strategy_package(
+    strategy_name: str,
+    repo_root: Path = REPO_ROOT,
+    release_dir: Path = RELEASE_DIR,
+) -> Path | None:
+    source = repo_root / "external_strategies" / strategy_name
+    if not source.exists():
+        return None
+    destination = release_dir / "external_strategies" / strategy_name
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(
+        source,
+        destination,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns(
+            "__pycache__",
+            "*.pyc",
+            "*.pyo",
+            "*.broken-backup",
+            "*.tmp",
+            "*.tmp.png",
+        ),
+    )
+    return destination
+
 
 def copy_scrap_strategy_package(
     repo_root: Path = REPO_ROOT,
     release_dir: Path = RELEASE_DIR,
 ) -> Path | None:
-    source = repo_root / "external_strategies" / "scrap_ad_battle"
-    if not source.exists():
-        return None
-    destination = release_dir / "external_strategies" / "scrap_ad_battle"
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source, destination, dirs_exist_ok=True)
-    return destination
+    return copy_external_strategy_package("scrap_ad_battle", repo_root, release_dir)
 
 
 def copy_combined_strategy_package(
     repo_root: Path = REPO_ROOT,
     release_dir: Path = RELEASE_DIR,
 ) -> Path | None:
-    source = repo_root / "external_strategies" / "scrap_then_ad_reward"
-    if not source.exists():
-        return None
-    destination = release_dir / "external_strategies" / "scrap_then_ad_reward"
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source, destination, dirs_exist_ok=True)
-    return destination
+    return copy_external_strategy_package("scrap_then_ad_reward", repo_root, release_dir)
 
 
 def copy_user_templates(
@@ -233,6 +264,8 @@ def clean() -> None:
     for path in (BUILD_DIR, DIST_DIR, RELEASE_DIR):
         if path.exists():
             shutil.rmtree(path)
+    if RELEASE_ZIP.exists():
+        RELEASE_ZIP.unlink()
 
 
 def run_pyinstaller(python: Path, name: str, entry: str, *, windowed: bool) -> None:
@@ -266,13 +299,34 @@ def create_release() -> None:
     (RELEASE_DIR / "user_templates" / "watch_buttons").mkdir(parents=True, exist_ok=True)
     (RELEASE_DIR / "user_templates" / "error_popups").mkdir(parents=True, exist_ok=True)
     (RELEASE_DIR / "user_templates" / "error_buttons").mkdir(parents=True, exist_ok=True)
+    (RELEASE_DIR / "user_templates" / "scrap_watch_cooldown").mkdir(parents=True, exist_ok=True)
     (RELEASE_DIR / "external_strategies").mkdir(parents=True, exist_ok=True)
-    copy_scrap_strategy_package()
-    copy_combined_strategy_package()
+    for strategy_name in (
+        "scrap_ad_battle",
+        "scrap_then_ad_reward",
+        "scrap_then_ad_reward_v2",
+    ):
+        copy_external_strategy_package(strategy_name)
     copy_user_templates()
     shutil.copy2(DIST_DIR / "CATSautomatic.exe", RELEASE_DIR / "CATSautomatic.exe")
     shutil.copy2(DIST_DIR / "CATSautomatic-cli.exe", RELEASE_DIR / "CATSautomatic-cli.exe")
     (RELEASE_DIR / "README使用说明.txt").write_text(README_TEXT, encoding="utf-8")
+
+
+    create_release_zip()
+
+
+def create_release_zip(
+    release_dir: Path = RELEASE_DIR,
+    zip_path: Path = RELEASE_ZIP,
+) -> Path:
+    if zip_path.exists():
+        zip_path.unlink()
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in release_dir.rglob("*"):
+            if path.is_file():
+                archive.write(path, path.relative_to(release_dir.parent))
+    return zip_path
 
 
 def clean_intermediate() -> None:

@@ -91,6 +91,7 @@ TARGET_LABELS.update({
     "home_right_ad_buttons": "主页右侧广告按钮",
     "home_right_ad_marker": "主页右侧广告页面",
     "pre_watch_optional": "观看前可选按钮",
+    "select_reward_mode": "奖励选择按钮",
 })
 
 PHASE_LABELS.update({
@@ -151,6 +152,8 @@ def to_display_decision(value: str) -> str:
 def to_display_target(value: str) -> str:
     if value.startswith("close_user_"):
         return "广告关闭按钮"
+    if value.startswith("watch_user_"):
+        return "用户看广告按钮"
     if value.startswith("error_popup_screenshot_"):
         return "错误弹窗"
     if value.startswith("error_button_screenshot_"):

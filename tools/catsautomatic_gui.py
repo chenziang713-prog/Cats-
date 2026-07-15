@@ -95,6 +95,7 @@ def load_latest_decision_record(run_dir: Path) -> str:
                 return str(decision)
     return ""
 DEFAULT_ADB_PATH = r"C:\Program Files\ASUS\GlideX\adb.exe"
+V2_STRATEGY_NAME = "scrap_then_ad_reward_v2"
 SCRAP_REQUIRED_TEMPLATES = (
     "scrap_entry.png",
     "scrap_next_button.png",
@@ -108,14 +109,14 @@ SCRAP_REQUIRED_TEMPLATES = (
 @dataclass
 class GuiConfig:
     adb_path: str = DEFAULT_ADB_PATH
-    adb_serial: str = "emulator-5556"
-    strategy: str = "ad_reward"
+    adb_serial: str = ""
+    strategy: str = V2_STRATEGY_NAME
     max_actions: str = "8"
-    max_loops: str = "999999"
+    max_loops: str = "300"
     click_cooldown: str = "1.5"
     interval: str = "1"
     min_click_confidence: str = "0.85"
-    repeat_after_reward: bool = True
+    repeat_after_reward: bool = False
     cycle_wait_seconds: str = "1800"
     max_cycles: str = "0"
     battle_wait_seconds: str = "60"
@@ -279,6 +280,42 @@ def build_combined_test_command(
     )
 
 
+def build_v2_film_command(
+    config: GuiConfig,
+    *,
+    real_click: bool = False,
+    python_executable: str | None = None,
+) -> list[str]:
+    v2_config = replace(
+        config,
+        strategy=V2_STRATEGY_NAME,
+        max_actions=config.max_actions or "8",
+        max_loops=config.max_loops or "300",
+        click_cooldown=config.click_cooldown or "1.5",
+        min_click_confidence=config.min_click_confidence or "0.85",
+        repeat_after_reward=False,
+        max_cycles="0",
+        stop_file=r"output\STOP",
+        log_file=r"output\v2-film-real.log" if real_click else r"output\v2-film-dry-run.log",
+        debug_save_capture=(
+            r"output\v2-film-real-capture.png"
+            if real_click
+            else r"output\v2-film-dry-run-capture.png"
+        ),
+    )
+    return build_main_command(
+        v2_config,
+        allow_click=real_click,
+        python_executable=python_executable,
+    )
+
+
+def feature_for_strategy(strategy: str) -> str:
+    if strategy == V2_STRATEGY_NAME:
+        return "ad_reward"
+    return strategy
+
+
 def cli_command_prefix(python_executable: str | None = None) -> list[str]:
     if python_executable is not None:
         return [python_executable, "-m", "cats_automatic.main"]
@@ -395,6 +432,7 @@ class CatsAutomaticGui:
         self.current_decision_var = tk.StringVar(value="当前决策：等待下一次识别结果")
         self.dashboard_var = tk.StringVar(value="状态：就绪  |  模式：DRY RUN  |  STOP：未检测")
         self.license_status_var = tk.StringVar(value="授权状态：未激活")
+        self.flow_status_var = tk.StringVar(value="运行 ID：- | 当前阶段：- | 动作：- | pending_effect：-")
         self.start_button: ttk.Button | None = None
         self.stop_button: ttk.Button | None = None
         self.strategy_combobox: ttk.Combobox | None = None
@@ -458,7 +496,7 @@ class CatsAutomaticGui:
         ttk.Label(header, text="POWERED BY 神箭", style="Brand.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 0))
         ttk.Label(
             header,
-            text="CATSautomatic v1.4",
+            text="CATSautomatic v1.5",
             style="Dashboard.TLabel",
         ).grid(row=0, column=1, sticky="e")
         ttk.Label(header, textvariable=self.dashboard_var, style="Dashboard.TLabel").grid(
@@ -647,6 +685,21 @@ class CatsAutomaticGui:
             ],
         )
 
+        self._add_button_group(
+            groups_frame,
+            2,
+            0,
+            "胶卷广告 V2",
+            [
+                ("胶卷 V2 模拟测试", self.v2_dry_run_test, "Primary.TButton"),
+                ("胶卷 V2 真实一轮", self.v2_real_one_cycle, "Danger.TButton"),
+                ("停止运行", self.stop_run, "Danger.TButton"),
+                ("打开最新运行目录", self.open_latest_run, None),
+                ("打开最新总结", self.open_latest_summary, None),
+                ("打开最后动作截图", self.open_last_action_screenshot, None),
+            ],
+        )
+
         log_frame = ttk.LabelFrame(
             self.main_paned,
             text="运行日志 / 输出日志",
@@ -662,6 +715,7 @@ class CatsAutomaticGui:
             side=tk.LEFT,
             padx=(8, 0),
         )
+        ttk.Label(log_toolbar, textvariable=self.flow_status_var).pack(side=tk.RIGHT)
         self.log = tk.Text(
             log_frame,
             width=110,
@@ -963,6 +1017,28 @@ class CatsAutomaticGui:
     def combined_loop_test(self) -> None:
         self._start_combined_test(loop_test=True)
 
+    def v2_dry_run_test(self) -> None:
+        self._start_v2_film(real_click=False)
+
+    def v2_real_one_cycle(self) -> None:
+        self._start_v2_film(real_click=True)
+
+    def _start_v2_film(self, *, real_click: bool) -> None:
+        if self.process is not None and self.process.poll() is None:
+            self.append_log("已有任务正在运行，不能重复启动。")
+            return
+        if not self.validate_adb_inputs():
+            return
+        if not self._require_license(V2_STRATEGY_NAME):
+            return
+        config = replace(self.current_config(), strategy=V2_STRATEGY_NAME, repeat_after_reward=False)
+        if real_click and not self.confirm_real_click("胶卷 V2 真实一轮"):
+            return
+        self.clear_stop_file(replace(config, stop_file=r"output\STOP"))
+        command = build_v2_film_command(config, real_click=real_click)
+        self.append_log("真实点击已开启" if real_click else "安全模拟：不会发送 ADB tap/keyevent")
+        self.start_process(command, "胶卷 V2 真实一轮" if real_click else "胶卷 V2 模拟测试")
+
     def _start_scrap_test(self, *, loop_test: bool) -> None:
         if self.process is not None and self.process.poll() is None:
             self.append_log("已有任务正在运行，不能重复启动。")
@@ -1081,7 +1157,8 @@ class CatsAutomaticGui:
         if not result.ok:
             self._apply_license_result(result, show_dialog=True)
             return False
-        if result.cache is None or strategy not in result.cache.features:
+        required_feature = feature_for_strategy(strategy)
+        if result.cache is None or required_feature not in result.cache.features:
             message = f"授权失败：当前卡密未开通 {strategy}。"
             self.append_log(message)
             messagebox.showerror("功能未授权", message)
@@ -1128,6 +1205,7 @@ class CatsAutomaticGui:
             "scrap_ad_battle": "废铁",
             "scrap_then_ad_reward": "废铁+胶卷",
         }
+        mapping["scrap_then_ad_reward_v2"] = "胶卷广告 V2"
         return [mapping.get(feature, feature) for feature in features]
 
     def confirm_real_click(self, run_name: str) -> bool:
@@ -1135,6 +1213,25 @@ class CatsAutomaticGui:
             "确认真实点击",
             f"{run_name} 即将启用真实 ADB 点击（--allow-click）。\n"
             "请确认模拟器界面、坐标和 stop-file 都已准备好。\n\n是否继续？",
+        )
+        if not confirmed:
+            self.append_log("已取消真实点击运行。")
+        return confirmed
+
+    def confirm_real_click(self, run_name: str) -> bool:
+        config = self.current_config()
+        confirmed = messagebox.askyesno(
+            "确认真实点击",
+            f"{run_name} 即将启用真实 ADB 点击（--allow-click）。\n"
+            f"策略：{config.strategy}\n"
+            f"设备：{config.adb_serial}\n"
+            f"ADB 路径：{config.adb_path}\n"
+            f"动作上限：{config.max_actions}\n"
+            f"最低点击置信度：{config.min_click_confidence}\n"
+            f"点击冷却：{config.click_cooldown}\n"
+            f"STOP 文件：{config.stop_file}\n"
+            "运行方式：仅一轮\n\n"
+            "入口、观看广告、关闭按钮和返回键将由 ADB 真实执行。\n是否继续？",
         )
         if not confirmed:
             self.append_log("已取消真实点击运行。")
@@ -1218,6 +1315,8 @@ class CatsAutomaticGui:
         if stream is None:
             return
         for line in stream:
+            if line.startswith("CATS_GUI_EVENT "):
+                self.log_queue.put("__GUI_EVENT__" + line.removeprefix("CATS_GUI_EVENT ").strip())
             if "决策：" in line and "（" in line:
                 self.log_queue.put(f"__DECISION__{line.split('决策：', 1)[1].split('（', 1)[0].strip()}")
             self.log_queue.put(f"[{name}] {line}")
@@ -1247,9 +1346,36 @@ class CatsAutomaticGui:
                 self.set_running(False)
             elif message.startswith("__DECISION__"):
                 self.current_decision_var.set(f"当前决策：{message.removeprefix('__DECISION__')}")
+            elif message.startswith("__GUI_EVENT__"):
+                self.apply_gui_event(message.removeprefix("__GUI_EVENT__"))
             else:
                 self.append_log(message, from_queue=True)
         self.root.after(100, self._poll_log_queue)
+
+    def apply_gui_event(self, raw_json: str) -> None:
+        try:
+            event = json.loads(raw_json)
+        except json.JSONDecodeError:
+            return
+        if event.get("event") != "flow_status":
+            return
+        action_result = event.get("action_result")
+        if not isinstance(action_result, dict):
+            action_result = {}
+        self.flow_status_var.set(
+            "运行 ID：{run_id} | 模式：{mode} | 阶段：{step} | 观察：{observed} | 接受：{accepted} | "
+            "动作：{decision} | pending_effect：{pending} | 真实动作：{executed}/{max_actions}".format(
+                run_id=event.get("run_id") or "-",
+                mode="安全模拟" if action_result.get("dry_run", True) else "真实点击",
+                step=event.get("current_step") or "-",
+                observed=event.get("observed_state") or "-",
+                accepted=event.get("accepted_state") or "-",
+                decision=event.get("decision") or "-",
+                pending=event.get("pending_effect") or "-",
+                executed=event.get("executed_actions") or 0,
+                max_actions=event.get("max_actions") or "-",
+            )
+        )
 
     def set_running(self, running: bool) -> None:
         if self.start_button is not None:
@@ -1506,6 +1632,22 @@ class CatsAutomaticGui:
 
     def open_latest_summary(self) -> None:
         self.open_latest_file("summary.txt")
+
+    def open_last_action_screenshot(self) -> None:
+        latest = latest_run_dir()
+        if latest is None:
+            self.append_log("没有找到最新 run 目录。")
+            return
+        records_path = latest / "click_records.csv"
+        if not records_path.exists():
+            self.append_log(f"文件不存在: {records_path}")
+            return
+        with records_path.open(newline="", encoding="utf-8") as handle:
+            rows = [row for row in csv.DictReader(handle) if row.get("screenshot_path")]
+        if not rows:
+            self.append_log("没有找到最后动作截图。")
+            return
+        self.open_path(Path(rows[-1]["screenshot_path"]))
 
     def open_latest_diagnosis(self) -> None:
         self.open_latest_file("diagnosis.txt")

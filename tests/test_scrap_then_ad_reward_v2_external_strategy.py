@@ -8,6 +8,7 @@ from pathlib import Path
 from cats_automatic.actions import ActionResult
 from cats_automatic.game_loader import load_game, load_strategy
 from cats_automatic.main import format_strategy_list
+from cats_automatic.runtime_paths import pre_watch_optional_templates_dir, watch_button_templates_dir
 from cats_automatic.strategy_base import DetectionResult, StrategyContext, StrategyDecision
 from external_strategies.scrap_then_ad_reward_v2.close_markers import safe_close_marker_names
 from external_strategies.scrap_then_ad_reward_v2.film_flow import (
@@ -37,14 +38,21 @@ def test_load_strategy_returns_v2_external_strategy() -> None:
     assert strategy.current_phase() == "START"
 
 
-def test_v2_strategy_targets_only_use_canonical_templates() -> None:
+def test_v2_strategy_targets_use_canonical_or_explicit_runtime_user_templates() -> None:
     strategy = Strategy()
-    canonical_dirs = tuple(path.resolve() for path in V2_CANONICAL_TEMPLATE_DIRS)
+    allowed_dirs = tuple(
+        path.resolve()
+        for path in (
+            *V2_CANONICAL_TEMPLATE_DIRS,
+            pre_watch_optional_templates_dir(create=False),
+            watch_button_templates_dir(create=False),
+        )
+    )
 
     assert strategy.targets()
     for target in strategy.targets():
         template = Path(target.template).resolve()
-        assert any(_is_relative_to(template, directory) for directory in canonical_dirs)
+        assert any(_is_relative_to(template, directory) for directory in allowed_dirs)
 
 
 def test_multiple_decide_loops_share_film_flow_context() -> None:

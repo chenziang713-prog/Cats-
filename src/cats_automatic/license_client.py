@@ -308,6 +308,8 @@ def authorize_strategy(
     skip_for_dev: bool = False,
     client: LicenseClient | None = None,
 ) -> LicenseResult:
+    requested_strategy = strategy
+    strategy = feature_for_strategy(strategy)
     if skip_for_dev:
         if os.environ.get("CATS_LICENSE_DEV_BYPASS") == "1":
             cache = LicenseCache("DEV-BYPASS", "dev", "", (strategy,), "", "", server_url)
@@ -322,6 +324,10 @@ def authorize_strategy(
     if result.ok and not result.allows(strategy):
         return LicenseResult(False, "feature_denied", "当前卡密未开通 strategy", "feature_denied", result.cache, "license_feature_denied")
     return result
+
+
+def feature_for_strategy(strategy: str) -> str:
+    return "ad_reward" if strategy == "scrap_then_ad_reward_v2" else strategy
 
 
 def _machine_guid() -> str:

@@ -8,9 +8,10 @@ from cats_automatic.actions import ActionResult, DryRunBackend
 from cats_automatic.backends import StaticImageCaptureBackend
 from cats_automatic.game_base import GameDefinition
 from cats_automatic.run_recording import RunRecorder
-from cats_automatic.strategy_base import DetectionResult, StrategyContext, StrategyDecision
+from cats_automatic.strategy_base import DetectionResult, StrategyContext, StrategyDecision, TargetSpec
 from cats_automatic.strategy_runner import StrategyRunner
 from cats_automatic.display_text import to_display_decision, to_display_phase, to_display_reason, to_display_target
+import external_strategies.scrap_then_ad_reward_v2.strategy as v2_strategy_module
 from external_strategies.scrap_then_ad_reward_v2.screen_state_detector import _template_paths_for_marker
 from external_strategies.scrap_then_ad_reward_v2.strategy import (
     Strategy,
@@ -109,6 +110,57 @@ def test_real_watch_tap_blocks_network_flashback_duplicate() -> None:
     assert first.action_name == "tap_marker"
     assert second.action_name == "wait"
     assert strategy.flow_context.watch_ad_click_attempts == 1
+
+
+def test_runtime_user_reward_and_watch_targets_are_loaded_into_v2_allow_list(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    optional = TargetSpec(
+        name="pre_watch_optional",
+        template=str(tmp_path / "optional.png"),
+        threshold=0.80,
+    )
+    watch = TargetSpec(
+        name="watch_user_001",
+        template=str(tmp_path / "watch.png"),
+        threshold=0.80,
+    )
+    monkeypatch.setattr(v2_strategy_module, "load_pre_watch_optional_target", lambda: optional)
+    monkeypatch.setattr(v2_strategy_module, "load_user_watch_targets", lambda: (watch,))
+
+    strategy = Strategy()
+    target_names = {target.name for target in strategy.targets()}
+
+    assert "pre_watch_optional" in target_names
+    assert "watch_user_001" in target_names
+    assert "pre_watch_optional" in strategy.tap_marker_allow_list
+    assert "watch_user_001" in strategy.tap_marker_allow_list
+
+
+def test_user_watch_template_advances_through_start_ad_like_builtin_watch_marker() -> None:
+    strategy = Strategy()
+    strategy.flow_context.current_step = "START_AD"
+    decision = strategy.decide(_context({"watch_user_001": _detection("watch_user_001", 0.93)}))
+
+    strategy.on_action_result(decision, _result("tap_marker", dry_run=False))
+
+    assert decision.action_name == "tap_marker"
+    assert decision.action_params["marker"] == "watch_user_001"
+    assert strategy.flow_context.watch_ad_click_attempts == 1
+    assert strategy.flow_context.pending_transition == "WATCH_AD"
+
+
+def test_user_optional_reward_template_records_selected_reward() -> None:
+    strategy = Strategy()
+    strategy.flow_context.current_step = "SELECT_REWARD"
+    decision = strategy.decide(_context({"pre_watch_optional": _detection("pre_watch_optional", 0.91)}))
+
+    strategy.on_action_result(decision, _result("tap_marker", dry_run=False))
+
+    assert decision.action_name == "tap_marker"
+    assert decision.action_params["marker"] == "pre_watch_optional"
+    assert strategy.flow_context.selected_reward == "pre_watch_optional"
 
 
 def test_reward_back_blocks_immediate_second_back() -> None:
@@ -294,6 +346,9 @@ def test_v2_display_text_has_no_untranslated_fallbacks() -> None:
     values = [
         to_display_target("main-definate"),
         to_display_target("watch_ad_film"),
+        to_display_target("watch_user_001"),
+        to_display_target("pre_watch_optional"),
+        to_display_target("select_reward_mode"),
         to_display_target("close_buttons"),
         to_display_target("get_reward"),
         to_display_decision("tap_marker"),

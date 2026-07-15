@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 from tools.build_release import (
+    copy_external_strategy_package,
     copy_combined_strategy_package,
     copy_scrap_strategy_package,
     copy_user_templates,
@@ -37,6 +38,7 @@ def test_syncs_all_allowed_template_directories(tmp_path: Path) -> None:
         "user_templates/error_buttons/ok.bmp",
         "external_strategies/scrap_ad_battle/templates/battle.png",
         "external_strategies/scrap_then_ad_reward/templates/combined.jpeg",
+        "external_strategies/scrap_then_ad_reward_v2/templates/user_templates/pre_watch_optional/optional.png",
     }
     for relative in expected:
         _write(release / relative, relative.encode())
@@ -116,17 +118,26 @@ def test_build_release_copies_user_and_strategy_templates(tmp_path: Path) -> Non
     _write(repo / "user_templates/error_buttons/ok.png", b"ok")
     _write(repo / "external_strategies/scrap_ad_battle/templates/battle.png", b"battle")
     _write(repo / "external_strategies/scrap_then_ad_reward/templates/combined.png", b"combined")
+    _write(repo / "external_strategies/scrap_then_ad_reward_v2/templates/user_templates/pre_watch_optional/optional.png", b"v2")
+    _write(repo / "external_strategies/scrap_then_ad_reward_v2/film_flow.py.broken-backup", b"old")
+    _write(repo / "external_strategies/scrap_then_ad_reward_v2/__pycache__/strategy.pyc", b"cache")
     _write(repo / "config/license_auth.json", b"secret")
 
     copied = copy_user_templates(repo, release)
     copy_scrap_strategy_package(repo, release)
     copy_combined_strategy_package(repo, release)
+    copy_external_strategy_package("scrap_then_ad_reward_v2", repo, release)
 
     assert copied == 2
     assert (release / "user_templates/watch_buttons/watch.png").exists()
     assert (release / "user_templates/error_buttons/ok.png").exists()
     assert (release / "external_strategies/scrap_ad_battle/templates/battle.png").exists()
     assert (release / "external_strategies/scrap_then_ad_reward/templates/combined.png").exists()
+    assert (
+        release / "external_strategies/scrap_then_ad_reward_v2/templates/user_templates/pre_watch_optional/optional.png"
+    ).exists()
+    assert not (release / "external_strategies/scrap_then_ad_reward_v2/film_flow.py.broken-backup").exists()
+    assert not (release / "external_strategies/scrap_then_ad_reward_v2/__pycache__/strategy.pyc").exists()
     assert not (release / "config/license_auth.json").exists()
 
 

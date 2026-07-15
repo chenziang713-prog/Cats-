@@ -46,11 +46,25 @@ FILM_STATES = (
 
 FILM_ENTRY_MARKER = "ad_entry"
 OPTIONAL_REWARD_MARKER = "select_reward_mode"
+OPTIONAL_REWARD_MARKERS = (
+    OPTIONAL_REWARD_MARKER,
+    "pre_watch_optional",
+)
 WATCH_AD_MARKER = "watch_ad_film"
+WATCH_AD_MARKERS = (
+    WATCH_AD_MARKER,
+    "watch_buttons",
+    "watch_ad_button",
+    "watch_user_*",
+)
 FILM_MARKER_MIN_CONFIDENCE = {
     FILM_ENTRY_MARKER: 0.85,
     OPTIONAL_REWARD_MARKER: 0.85,
+    "pre_watch_optional": 0.80,
     WATCH_AD_MARKER: 0.85,
+    "watch_buttons": 0.80,
+    "watch_ad_button": 0.80,
+    "watch_user_*": 0.80,
     "get_reward": 0.85,
     "confirm_button": 0.85,
 }
@@ -61,8 +75,8 @@ FILM_CLOSE_AD_MAX_TOTAL_CLICKS = 4
 
 FILM_BUSINESS_TAP_MARKERS = (
     FILM_ENTRY_MARKER,
-    OPTIONAL_REWARD_MARKER,
-    WATCH_AD_MARKER,
+    *OPTIONAL_REWARD_MARKERS,
+    *WATCH_AD_MARKERS,
     "get_reward",
     "confirm_button",
 )
@@ -82,7 +96,7 @@ FILM_REGISTERED_MARKERS = tuple(
 )
 
 FILM_UNRESOLVED_CONFIRMATIONS = (
-    "select_reward_mode template is still optional/incomplete",
+    "select_reward_mode/pre_watch_optional reward selection template is optional",
     "whether get_reward and confirm_button are the same clickable object",
     "whether reward claim always returns to HOME_PAGE automatically",
     "whether one emulator BACK is allowed if reward claim does not return home",
@@ -276,11 +290,12 @@ def decide_film_flow_action(
             return _wait(current_step, current_state, "wait_for_film_select_page")
 
     if current_step == "SELECT_REWARD" and current_state == "FILM_WATCH_PAGE":
-        if _has_marker(detections, OPTIONAL_REWARD_MARKER):
+        selected_reward = _select_marker(detections, OPTIONAL_REWARD_MARKERS)
+        if selected_reward is not None:
             return _tap(
                 current_step,
                 current_state,
-                OPTIONAL_REWARD_MARKER,
+                selected_reward,
                 "optional_reward_marker_selected",
                 "START_AD",
             )
@@ -293,11 +308,11 @@ def decide_film_flow_action(
 
     if current_step == "START_AD":
         if current_state == "FILM_WATCH_PAGE":
-            return _tap_or_wait(
+            return _tap_or_wait_any(
                 current_step,
                 current_state,
                 detections,
-                marker=WATCH_AD_MARKER,
+                markers=WATCH_AD_MARKERS,
                 max_attempts=WATCH_AD_MAX_CLICKS,
                 attempts=watch_ad_click_attempts,
                 wait_reason="watch_ad_film_marker_not_found",
@@ -411,6 +426,27 @@ def _tap_or_wait(
     return _tap(step, state, marker, tap_reason, next_step)
 
 
+def _tap_or_wait_any(
+    step: str,
+    state: str,
+    detections: Mapping[str, DetectionResult],
+    *,
+    markers: tuple[str, ...],
+    max_attempts: int,
+    attempts: int,
+    wait_reason: str,
+    limit_reason: str,
+    tap_reason: str,
+    next_step: str,
+) -> FilmDecision:
+    if attempts >= max_attempts:
+        return _wait(step, state, limit_reason)
+    selected = _select_marker(detections, markers)
+    if selected is None:
+        return _wait(step, state, wait_reason)
+    return _tap(step, state, selected, tap_reason, next_step)
+
+
 def _tap(step: str, state: str, marker: str, reason: str, next_step: str) -> FilmDecision:
     return _decision(
         step,
@@ -455,6 +491,41 @@ def _has_marker(detections: Mapping[str, DetectionResult], marker: str) -> bool:
     if detection is None:
         return False
     return detection.confidence >= FILM_MARKER_MIN_CONFIDENCE.get(marker, CLOSE_AD_MIN_CONFIDENCE)
+
+
+def _select_marker(
+    detections: Mapping[str, DetectionResult],
+    markers: tuple[str, ...],
+) -> str | None:
+    candidates: list[DetectionResult] = []
+    for pattern in markers:
+        for name, detection in detections.items():
+            if not _marker_matches(pattern, name):
+                continue
+            if detection.confidence < _marker_threshold(pattern, name):
+                continue
+            candidates.append(detection)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item.confidence).name
+
+
+def is_optional_reward_marker(marker: str | None) -> bool:
+    return marker is not None and any(_marker_matches(pattern, marker) for pattern in OPTIONAL_REWARD_MARKERS)
+
+
+def is_watch_ad_marker(marker: str | None) -> bool:
+    return marker is not None and any(_marker_matches(pattern, marker) for pattern in WATCH_AD_MARKERS)
+
+
+def _marker_threshold(pattern: str, marker: str) -> float:
+    return FILM_MARKER_MIN_CONFIDENCE.get(marker, FILM_MARKER_MIN_CONFIDENCE.get(pattern, CLOSE_AD_MIN_CONFIDENCE))
+
+
+def _marker_matches(pattern: str, marker: str) -> bool:
+    if pattern.endswith("*"):
+        return marker.startswith(pattern[:-1])
+    return marker == pattern
 
 
 def _is_home_state(state: str) -> bool:

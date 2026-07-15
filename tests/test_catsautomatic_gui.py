@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import tkinter as tk
+import json
 from pathlib import Path
 
 import pytest
@@ -11,13 +12,16 @@ import tools.catsautomatic_gui as gui_module
 from tools.catsautomatic_gui import (
     SCRAP_REQUIRED_TEMPLATES,
     CatsAutomaticGui,
+    V2_STRATEGY_NAME,
     build_combined_test_command,
+    build_v2_film_command,
     GuiConfig,
     build_main_command,
     build_scrap_test_command,
     copy_close_button_template,
     copy_pre_watch_optional_template,
     copy_watch_button_template,
+    feature_for_strategy,
     gui_external_strategies_dir,
     gui_close_button_templates_dir,
     gui_pre_watch_optional_dir,
@@ -51,6 +55,42 @@ def test_gui_dry_run_command_never_contains_allow_click() -> None:
     assert command[command.index("--max-actions") + 1] == "2"
     assert command[command.index("--max-loops") + 1] == "2"
     assert "--repeat-after-reward" not in command
+
+
+def test_gui_default_strategy_is_v2_film_and_device_is_not_hardcoded() -> None:
+    config = GuiConfig()
+
+    assert config.strategy == V2_STRATEGY_NAME
+    assert config.adb_serial == ""
+    assert config.repeat_after_reward is False
+
+
+def test_v2_film_dry_run_command_is_one_cycle_without_allow_click() -> None:
+    config = GuiConfig(adb_path="adb.exe", adb_serial="emulator-5556")
+
+    command = build_v2_film_command(config, real_click=False, python_executable="python")
+
+    assert command[command.index("--strategy") + 1] == V2_STRATEGY_NAME
+    assert "--allow-click" not in command
+    assert "--repeat-after-reward" not in command
+    assert "--max-cycles" not in command
+    assert "output\\v2-film-dry-run.log" in command
+
+
+def test_v2_film_real_command_enables_allow_click_but_not_repeat() -> None:
+    config = GuiConfig(adb_path="adb.exe", adb_serial="emulator-5556")
+
+    command = build_v2_film_command(config, real_click=True, python_executable="python")
+
+    assert command[command.index("--strategy") + 1] == V2_STRATEGY_NAME
+    assert "--allow-click" in command
+    assert "--repeat-after-reward" not in command
+    assert "output\\v2-film-real.log" in command
+
+
+def test_v2_strategy_reuses_ad_reward_license_feature() -> None:
+    assert feature_for_strategy(V2_STRATEGY_NAME) == "ad_reward"
+    assert feature_for_strategy("scrap_then_ad_reward") == "scrap_then_ad_reward"
 
 
 def test_gui_allow_click_command_contains_allow_click() -> None:
@@ -392,6 +432,16 @@ def test_gui_button_groups_keep_scrap_and_existing_buttons(gui_app: CatsAutomati
     assert "授权状态" in gui_app.license_status_var.get()
 
 
+def test_gui_has_v2_film_shortcut_buttons(gui_app: CatsAutomaticGui) -> None:
+    expected = {
+        "胶卷 V2 模拟测试",
+        "胶卷 V2 真实一轮",
+        "打开最后动作截图",
+    }
+
+    assert expected.issubset(gui_app.buttons_by_text)
+
+
 def test_gui_blocks_missing_license(
     gui_app: CatsAutomaticGui,
     monkeypatch: pytest.MonkeyPatch,
@@ -455,6 +505,54 @@ def test_gui_dev_environment_still_respects_cached_test_key_features(
     monkeypatch.setattr("tools.catsautomatic_gui.messagebox.showerror", lambda *_: None)
 
     assert gui_app._require_license("scrap_then_ad_reward") is False
+
+
+def test_gui_v2_strategy_is_allowed_by_ad_reward_license(
+    gui_app: CatsAutomaticGui,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = LicenseCache(
+        "CATS-DEV-AD-ONLY",
+        "device",
+        "local-dev-token",
+        ("ad_reward",),
+        "expiry",
+        "token-expiry",
+        "http://demo",
+    )
+    monkeypatch.delenv("CATS_LICENSE_DEV_BYPASS", raising=False)
+    monkeypatch.setattr("tools.catsautomatic_gui.load_license_cache", lambda *_: cache)
+    monkeypatch.setattr(
+        "tools.catsautomatic_gui.LicenseClient.heartbeat",
+        lambda _self, _cache: LicenseResult(True, "active", "ok", cache=cache),
+    )
+    monkeypatch.setattr("tools.catsautomatic_gui.messagebox.showerror", lambda *_: None)
+
+    assert gui_app._require_license(V2_STRATEGY_NAME) is True
+
+
+def test_gui_applies_v2_flow_status_event(gui_app: CatsAutomaticGui) -> None:
+    payload = {
+        "event": "flow_status",
+        "flow_status": "running",
+        "run_id": "run-1",
+        "loop": 5,
+        "current_step": "WATCH_AD",
+        "observed_state": "UNKNOWN",
+        "accepted_state": "UNKNOWN",
+        "decision": "wait",
+        "pending_effect": "waiting_for_watch_ad_film_effect",
+        "executed_actions": 2,
+        "max_actions": 8,
+    }
+
+    gui_app.apply_gui_event(json.dumps(payload))
+
+    text = gui_app.flow_status_var.get()
+    assert "run-1" in text
+    assert "WATCH_AD" in text
+    assert "UNKNOWN" in text
+    assert "wait" in text
 
 
 def test_gui_log_uses_colored_tags(gui_app: CatsAutomaticGui) -> None:

@@ -100,6 +100,32 @@ def test_select_reward_missing_optional_marker_does_not_block() -> None:
     assert decision.reason == "optional_reward_marker_not_found"
 
 
+def test_select_reward_taps_user_optional_reward_template() -> None:
+    decision = decide_film_flow_action(
+        step="SELECT_REWARD",
+        state="FILM_WATCH_PAGE",
+        detections={"pre_watch_optional": _detection("pre_watch_optional", 0.91)},
+    )
+
+    assert decision.action["name"] == "tap_marker"
+    assert decision.action["params"]["marker"] == "pre_watch_optional"
+    assert decision.next_step == "START_AD"
+    assert decision.reason == "optional_reward_marker_selected"
+
+
+def test_select_reward_chooses_highest_confidence_reward_template() -> None:
+    decision = decide_film_flow_action(
+        step="SELECT_REWARD",
+        state="FILM_WATCH_PAGE",
+        detections={
+            "select_reward_mode": _detection("select_reward_mode", 0.86),
+            "pre_watch_optional": _detection("pre_watch_optional", 0.94),
+        },
+    )
+
+    assert decision.action["params"]["marker"] == "pre_watch_optional"
+
+
 def test_start_ad_taps_watch_ad_film_and_waits_for_confirmation() -> None:
     decision = decide_film_flow_action(
         step="START_AD",
@@ -110,6 +136,29 @@ def test_start_ad_taps_watch_ad_film_and_waits_for_confirmation() -> None:
     assert decision.action["name"] == "tap_marker"
     assert decision.action["params"]["marker"] == "watch_ad_film"
     assert decision.next_step == "START_AD"
+
+
+def test_start_ad_can_tap_user_watch_button_template() -> None:
+    decision = decide_film_flow_action(
+        step="START_AD",
+        state="FILM_WATCH_PAGE",
+        detections={"watch_user_001": _detection("watch_user_001", 0.97)},
+    )
+
+    assert decision.action["name"] == "tap_marker"
+    assert decision.action["params"]["marker"] == "watch_user_001"
+    assert decision.next_step == "START_AD"
+
+
+def test_start_ad_user_watch_button_below_threshold_waits() -> None:
+    decision = decide_film_flow_action(
+        step="START_AD",
+        state="FILM_WATCH_PAGE",
+        detections={"watch_user_001": _detection("watch_user_001", 0.79)},
+    )
+
+    assert decision.action["name"] == "wait"
+    assert decision.reason == "watch_ad_film_marker_not_found"
 
 
 def test_watch_ad_unknown_waits_and_keeps_watch_ad() -> None:

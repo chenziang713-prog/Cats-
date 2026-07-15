@@ -7,6 +7,7 @@ from typing import Any, Mapping, NamedTuple
 
 from cats_automatic.actions import ActionResult
 from cats_automatic.strategy_base import DetectionResult, StrategyContext, StrategyDecision, TargetSpec
+from cats_automatic.user_ad_reward_templates import load_pre_watch_optional_target, load_user_watch_targets
 
 from external_strategies.scrap_then_ad_reward_v2.authoring import action_to_decision
 from external_strategies.scrap_then_ad_reward_v2.close_markers import safe_close_marker_names
@@ -15,8 +16,9 @@ from external_strategies.scrap_then_ad_reward_v2.film_flow import (
     FILM_ENTRY_MARKER,
     FilmDecision,
     V2_TAP_MARKER_ALLOW_LIST,
-    WATCH_AD_MARKER,
     decide_film_flow_action,
+    is_optional_reward_marker,
+    is_watch_ad_marker,
 )
 from external_strategies.scrap_then_ad_reward_v2.screen_state_detector import (
     detect_current_screen_state_from_detections,
@@ -129,7 +131,6 @@ class Strategy:
     """Runtime adapter that keeps v2 detection and film flow state synchronized."""
 
     handles_reward_cycle_completion = True
-    tap_marker_allow_list = frozenset(V2_TAP_MARKER_ALLOW_LIST)
 
     def __init__(self) -> None:
         self.flow_context = FilmFlowRuntimeContext()
@@ -139,6 +140,10 @@ class Strategy:
         self._events: list[dict[str, Any]] = []
         self._targets: tuple[TargetSpec, ...] | None = None
         self._decision_sequence = 0
+
+    @property
+    def tap_marker_allow_list(self) -> frozenset[str]:
+        return frozenset((*V2_TAP_MARKER_ALLOW_LIST, *self._runtime_user_marker_names()))
 
     @property
     def close_ad_attempts(self) -> int:
@@ -151,6 +156,14 @@ class Strategy:
         if self._targets is None:
             self._targets = tuple(_canonical_v2_targets())
         return self._targets
+
+    def _runtime_user_marker_names(self) -> tuple[str, ...]:
+        names = [
+            target.name
+            for target in _runtime_user_ad_reward_targets()
+            if target.name in {"pre_watch_optional"} or target.name.startswith("watch_user_")
+        ]
+        return tuple(dict.fromkeys(names))
 
     def decide(self, context: StrategyContext) -> StrategyDecision:
         screen_state_result = detect_current_screen_state_from_detections(
@@ -492,7 +505,7 @@ class Strategy:
             return True
         if effect.action_name == "tap_marker" and effect.target_marker == FILM_ENTRY_MARKER:
             return accepted_state == "FILM_WATCH_PAGE" or effect.target_marker not in detections
-        if effect.action_name == "tap_marker" and effect.target_marker == WATCH_AD_MARKER:
+        if effect.action_name == "tap_marker" and is_watch_ad_marker(effect.target_marker):
             return accepted_state in {
                 "UNKNOWN",
                 "UNKNOWN_PAGE",
@@ -553,7 +566,7 @@ class Strategy:
                     self.flow_context.entry_click_attempts += 1
                     self._set_pending_effect(action, marker, proposed_next_step, action_result)
                 self.flow_context.pending_transition = "SELECT_REWARD"
-            elif marker == WATCH_AD_MARKER:
+            elif is_watch_ad_marker(marker):
                 if status == "executed":
                     self.flow_context.watch_ad_click_attempts += 1
                     self._set_pending_effect(action, marker, proposed_next_step, action_result)
@@ -580,7 +593,7 @@ class Strategy:
             self.flow_context.last_close_screenshot_path = ""
             self.flow_context.last_close_fingerprint = ""
             self.flow_context.last_close_center = None
-        if action == "tap_marker" and marker == "select_reward_mode":
+        if action == "tap_marker" and is_optional_reward_marker(marker):
             self.flow_context.selected_reward = marker
 
     def _set_pending_effect(
@@ -753,6 +766,16 @@ def _canonical_v2_targets() -> list[TargetSpec]:
                     optional=True,
                 )
             )
+    targets.extend(_runtime_user_ad_reward_targets())
+    return targets
+
+
+def _runtime_user_ad_reward_targets() -> list[TargetSpec]:
+    targets: list[TargetSpec] = []
+    optional_target = load_pre_watch_optional_target()
+    if optional_target is not None:
+        targets.append(optional_target)
+    targets.extend(load_user_watch_targets())
     return targets
 
 
@@ -891,7 +914,7 @@ def _effect_wait_decision(effect: PendingEffect, state: str) -> FilmDecision:
 def _confirmation_seconds_for_effect(action: str, marker: str | None) -> float:
     if action == "tap_marker" and marker == FILM_ENTRY_MARKER:
         return 2.5
-    if action == "tap_marker" and marker == WATCH_AD_MARKER:
+    if action == "tap_marker" and is_watch_ad_marker(marker):
         return 3.0
     if action == "tap_marker" and marker in set(safe_close_marker_names()):
         return 2.0
@@ -901,7 +924,7 @@ def _confirmation_seconds_for_effect(action: str, marker: str | None) -> float:
 
 
 def _max_retries_for_effect(action: str, marker: str | None) -> int:
-    if action == "tap_marker" and marker in {FILM_ENTRY_MARKER, WATCH_AD_MARKER}:
+    if action == "tap_marker" and (marker == FILM_ENTRY_MARKER or is_watch_ad_marker(marker)):
         return 1
     if action == "tap_marker" and marker in set(safe_close_marker_names()):
         return 1
