@@ -333,7 +333,10 @@ class StrategyRunner:
                 continue
             if match.confidence < target.threshold:
                 continue
-            detections[target.name] = _to_detection_result(target, template_path, match)
+            detection = _to_detection_result(target, template_path, match)
+            current = detections.get(target.name)
+            if current is None or detection.confidence > current.confidence:
+                detections[target.name] = detection
         return detections
 
     def _save_debug_capture(self, capture_path: Path, loop_index: int) -> None:

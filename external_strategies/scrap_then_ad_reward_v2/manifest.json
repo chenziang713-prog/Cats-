@@ -1,0 +1,9 @@
+{
+  "strategy_name": "scrap_then_ad_reward_v2",
+  "display_name": "废铁 + 胶卷广告 v2",
+  "game": "cats",
+  "entry_class": "Strategy",
+  "description": "使用 v2 页面状态识别与流程状态机执行胶卷广告奖励流程",
+  "version": "2.0",
+  "templates_dir": "templates"
+}
