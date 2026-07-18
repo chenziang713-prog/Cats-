@@ -21,3 +21,6 @@ logs/
 watch-screen.png
 CATSautomatic-release*/
 CATSautomatic-release*.zip
+CATSautomaticV2-release*/
+CATSautomaticV2-release*.zip
+.codex-tmp/
